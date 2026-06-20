@@ -148,6 +148,11 @@ class PrintPakages:
 
 class PackageCollector:
     def __init__(self, path: Path):
+        """
+        Initialize the PackageCollector with a given path.
+        Args:
+            path (Path): The directory path where the files are located.
+        """
         self.path = path
         self.package_units = self.path / "Грузоместа.xlsx"
         self.template_fn = "Шаблон поставки товаров.xlsx"
