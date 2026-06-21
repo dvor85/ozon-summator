@@ -47,7 +47,7 @@ class BaseOperations:
             return f
         return None
 
-    def write(
+    def to_excel_with_format(
         self, df: pd.DataFrame, fn: Path, sheet_name: str, index: bool = False
     ) -> None:
         with pd.ExcelWriter(fn) as writer:
@@ -120,7 +120,7 @@ class Summator(BaseOperations):
                 k for k, v in self.columns.items() if "артикул" in k.lower()
             ][0]
             result = result.sort_values(by=articul_col, ascending=True)
-            self.write(result, gen_file, "Сводная")
+            self.to_excel_with_format(result, gen_file, "Сводная")
         except Exception as e:
             logger.warning(f"Нет файлов сооветствующих шаблону '{self.template}': {e}")
 
@@ -201,7 +201,9 @@ class PackageCollector(BaseOperations):
                 "количество": "Int64",
             }
         )
-        self.write(df, self.path / self.template_fn, "Товарный состав", index=True)
+        self.to_excel_with_format(
+            df, self.path / self.template_fn, "Товарный состав", index=True
+        )
 
     @staticmethod
     def read_file(filename: Path) -> pd.DataFrame:
@@ -243,7 +245,7 @@ class PackageCollector(BaseOperations):
                             "ШК ГМ": "string",
                         }
                     )
-                    self.write(df, f, "Состав ГМ поставки")
+                    self.to_excel_with_format(df, f, "Состав ГМ поставки")
                 else:
                     logger.error(f"Отсутствует файл {template_file}")
             else:
