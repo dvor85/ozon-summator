@@ -5,7 +5,7 @@ from collections.abc import Generator
 from pathlib import Path
 import pandas as pd
 from loguru import logger
-
+from openpyxl.styles import Alignment
 
 warnings.filterwarnings(
     "ignore", message="Workbook contains no default style, apply openpyxl's default"
@@ -53,20 +53,27 @@ class BaseOperations:
         with pd.ExcelWriter(fn) as writer:
             df.to_excel(writer, index=index, sheet_name=sheet_name)
             worksheet = writer.sheets[sheet_name]
-            self.format(worksheet, df)
+            self.format(worksheet, df, index)
 
     @staticmethod
-    def format(worksheet, df: pd.DataFrame):
-        cols = dict(zip(df.columns, string.ascii_uppercase, strict=False))
+    def format(worksheet, df: pd.DataFrame, index: bool = False):
+        left_align = Alignment(horizontal="left")
+        excel_cols = string.ascii_uppercase
+        if index:
+            worksheet.column_dimensions["A"].width = 4
+            worksheet.column_dimensions["A"].alignment = left_align
+            excel_cols = excel_cols[1:]
+        cols = dict(zip(df.columns, excel_cols, strict=False))
+
         for k, v in cols.items():
             if "артикул" in k.lower():
-                worksheet.column_dimensions[v].width = 30
+                worksheet.column_dimensions[v].width = 29
             elif "имя" in k.lower():
-                worksheet.column_dimensions[v].width = 40
+                worksheet.column_dimensions[v].width = 39
             elif "кол" in k.lower():
-                worksheet.column_dimensions[v].width = 6
+                worksheet.column_dimensions[v].width = 5
             elif "шк" in k.lower():
-                worksheet.column_dimensions[v].width = 18
+                worksheet.column_dimensions[v].width = 17
             else:
                 worksheet.column_dimensions[v].width = 10
 
@@ -254,7 +261,8 @@ class PackageCollector(BaseOperations):
 
 if __name__ == "__main__":
     options = get_options()
-    root_path = Path(options.root_path)
+    root_path = Path(options.root_path).absolute()
+    logger.info(f"Рабочая директория: {root_path}")
 
     collector = PackageCollector(root_path)
     if options.template:
