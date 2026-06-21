@@ -1,14 +1,10 @@
-import sys
+import string
 import warnings
+from argparse import ArgumentParser
 from collections.abc import Generator
 from pathlib import Path
 import pandas as pd
 from loguru import logger
-
-
-def usage():
-    logger.info(f"{Path(__file__).name} <root_dir>")
-    sys.exit(1)
 
 
 warnings.filterwarnings(
@@ -16,9 +12,68 @@ warnings.filterwarnings(
 )
 
 
-class Summator:
+def get_options():
+    parser = ArgumentParser(
+        prog="ozon",
+        description="Подготовка поставок FBO ozon",
+    )
+    parser.add_argument(
+        "root_path",
+        help="""Путь к папке с данными. Например: 
+        <Товары.xlsx> (Выгрузка товаров из озона), 
+        москва -> 
+            <Шаблон поставки товаров.xlsx> (подготовленный шаблон для загрузки товаров в озон), 
+            [import-package-units-template.xlsx] (выгрузка состава поставки из озона)
+        """,
+    )
+    parser.add_argument(
+        "-t",
+        "--template",
+        help="Сгенерировать шаблон поставки товаров",
+        action="store_true",
+    )
+    return parser.parse_args()
+
+
+class BaseOperations:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.package_units = self.path / "Грузоместа.xlsx"
+        self.template_fn = "Шаблон поставки товаров.xlsx"
+
+    @property
+    def products_fn(self) -> Path | None:
+        for f in self.path.glob("Товары*.xlsx"):
+            return f
+        return None
+
+    def write(
+        self, df: pd.DataFrame, fn: Path, sheet_name: str, index: bool = False
+    ) -> None:
+        with pd.ExcelWriter(fn) as writer:
+            df.to_excel(writer, index=index, sheet_name=sheet_name)
+            worksheet = writer.sheets[sheet_name]
+            self.format(worksheet, df)
+
+    @staticmethod
+    def format(worksheet, df: pd.DataFrame):
+        cols = dict(zip(df.columns, string.ascii_uppercase, strict=False))
+        for k, v in cols.items():
+            if "артикул" in k.lower():
+                worksheet.column_dimensions[v].width = 30
+            elif "имя" in k.lower():
+                worksheet.column_dimensions[v].width = 40
+            elif "кол" in k.lower():
+                worksheet.column_dimensions[v].width = 6
+            elif "шк" in k.lower():
+                worksheet.column_dimensions[v].width = 18
+            else:
+                worksheet.column_dimensions[v].width = 10
+
+
+class Summator(BaseOperations):
     def __init__(self, path: Path, template: str):
-        self.path = path
+        super().__init__(path)
         self.template = template
         self.type = (
             "факт" if "import-package-units-template" in self.template else "план"
@@ -43,11 +98,9 @@ class Summator:
         df = pd.read_excel(filename, usecols="A,B,C").astype(self.columns)
         return df
 
-    @staticmethod
-    def format(worksheet):
-        worksheet.column_dimensions["A"].width = 20
-        worksheet.column_dimensions["B"].width = 50
-        worksheet.column_dimensions["C"].width = 6
+    def read_dir(self) -> Generator[pd.DataFrame]:
+        for f in self.path.rglob(self.template):
+            yield self.read_file(f)
 
     def gen_group_version(self) -> None:
         dfs = self.read_dir()
@@ -63,26 +116,16 @@ class Summator:
                 )[sum_col]
                 .sum()
             ).query(f"`{sum_col}` > 0")
-            with pd.ExcelWriter(gen_file) as writer:
-                result.to_excel(
-                    writer,
-                    index=False,
-                    sheet_name="Сводная",
-                )
-                worksheet = writer.sheets["Сводная"]
-                self.format(worksheet)
+            articul_col = [
+                k for k, v in self.columns.items() if "артикул" in k.lower()
+            ][0]
+            result = result.sort_values(by=articul_col, ascending=True)
+            self.write(result, gen_file, "Сводная")
         except Exception as e:
             logger.warning(f"Нет файлов сооветствующих шаблону '{self.template}': {e}")
 
-    def read_dir(self) -> Generator[pd.DataFrame]:
-        for f in self.path.rglob(self.template):
-            yield self.read_file(f)
 
-
-class PrintPakages:
-    def __init__(self, path: Path):
-        self.path = path
-
+class PrintPakages(BaseOperations):
     @staticmethod
     def read_file(filename: Path) -> pd.DataFrame:
         df = pd.read_excel(filename, usecols="A,B,C,F").astype(
@@ -94,13 +137,6 @@ class PrintPakages:
             }
         )
         return df
-
-    @staticmethod
-    def format(worksheet):
-        worksheet.column_dimensions["A"].width = 16
-        worksheet.column_dimensions["B"].width = 35
-        worksheet.column_dimensions["C"].width = 6
-        worksheet.column_dimensions["D"].width = 18
 
     def gen_print_version_in_sheet(self) -> None:
         gen_file = self.path / "Грузоместа.xlsx"
@@ -127,7 +163,7 @@ class PrintPakages:
                         )
                         startrow += len(df) + 1
                         worksheet = writer.sheets["Сводная"]
-                        self.format(worksheet)
+                        self.format(worksheet, df)
                     except Exception as e:
                         logger.warning(f"Ошибка при обработке города {city}: {e}")
         except Exception as e:
@@ -143,40 +179,34 @@ class PrintPakages:
                 city = f.parent.name.capitalize()
                 df.to_excel(writer, index=False, sheet_name=city)
                 worksheet = writer.sheets[city]
-                self.format(worksheet)
+                self.format(worksheet, df)
 
 
-class PackageCollector:
-    def __init__(self, path: Path):
-        """
-        Initialize the PackageCollector with a given path.
-        Args:
-            path (Path): The directory path where the files are located.
-        """
-        self.path = path
-        self.package_units = self.path / "Грузоместа.xlsx"
-        self.template_fn = "Шаблон поставки товаров.xlsx"
+class PackageCollector(BaseOperations):
+    def gen_template(self) -> None:
+        logger.info(f"Генерация файла '{self.template_fn}'")
+        if not (self.products_fn and self.products_fn.exists()):
+            logger.error(f"Отсутствует файл с товарами '{self.products_fn}'")
+            return
 
-    @property
-    def products_fn(self) -> Path | None:
-        for f in self.path.glob("Товары*.xlsx"):
-            return f
-        return None
+        df = pd.read_excel(self.products_fn, usecols="A,E", skiprows=1).convert_dtypes()
+        df["Артикул"] = df["Артикул"].str.replace("'", "")
+        df["количество"] = 0
+        df = df.rename(
+            columns={"Артикул": "артикул", "Название товара": "имя (необязательно)"}
+        ).astype(
+            {
+                "артикул": "string",
+                "имя (необязательно)": "string",
+                "количество": "Int64",
+            }
+        )
+        self.write(df, self.path / self.template_fn, "Товарный состав", index=True)
 
     @staticmethod
     def read_file(filename: Path) -> pd.DataFrame:
         df = pd.read_excel(filename).convert_dtypes()
         return df
-
-    @staticmethod
-    def format(worksheet):
-        worksheet.column_dimensions["A"].width = 16
-        worksheet.column_dimensions["B"].width = 35
-        worksheet.column_dimensions["C"].width = 6
-        worksheet.column_dimensions["D"].width = 18
-        worksheet.column_dimensions["E"].width = 18
-        worksheet.column_dimensions["F"].width = 18
-        worksheet.column_dimensions["G"].width = 18
 
     def run(self) -> None:
         if not (self.products_fn and self.products_fn.exists()):
@@ -213,33 +243,28 @@ class PackageCollector:
                             "ШК ГМ": "string",
                         }
                     )
-                    self.write(df, f)
+                    self.write(df, f, "Состав ГМ поставки")
                 else:
                     logger.error(f"Отсутствует файл {template_file}")
             else:
                 logger.warning(f"Файл {f} уже содержит данные, пропускаем...")
 
-    def write(self, df: pd.DataFrame, fn: Path) -> None:
-        sheet_name = "Состав ГМ поставки"
-        with pd.ExcelWriter(fn) as writer:
-            df.to_excel(writer, index=False, sheet_name=sheet_name)
-            worksheet = writer.sheets[sheet_name]
-            self.format(worksheet)
-
 
 if __name__ == "__main__":
-    root_path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-    if root_path is None:
-        usage()
+    options = get_options()
+    root_path = Path(options.root_path)
 
     collector = PackageCollector(root_path)
-    collector.run()
+    if options.template:
+        collector.gen_template()
+    else:
+        collector.run()
 
-    fact_summator = Summator(root_path, "import-package-units-template*.xlsx")
-    fact_summator.gen_group_version()
+        fact_summator = Summator(root_path, "import-package-units-template*.xlsx")
+        fact_summator.gen_group_version()
 
-    plan_summator = Summator(root_path, "Шаблон поставки товаров*.xlsx")
-    plan_summator.gen_group_version()
+        plan_summator = Summator(root_path, "Шаблон поставки товаров*.xlsx")
+        plan_summator.gen_group_version()
 
-    print_pakages = PrintPakages(root_path)
-    print_pakages.gen_print_version_in_sheet()
+        print_pakages = PrintPakages(root_path)
+        print_pakages.gen_print_version_in_sheet()
