@@ -172,6 +172,7 @@ class PrintPakages(BaseOperations):
                         self.format(worksheet, df)
                     except Exception as e:
                         logger.warning(f"Ошибка при обработке города {city}: {e}")
+            logger.success(f"{gen_file} успешно создан")
         except Exception as e:
             logger.warning(
                 f"Нет файлов сооветствующих шаблону 'import-package-units-template*.xlsx': {e}"
