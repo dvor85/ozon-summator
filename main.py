@@ -3,6 +3,7 @@ import warnings
 from argparse import ArgumentParser
 from collections.abc import Generator
 from pathlib import Path
+
 import pandas as pd
 from loguru import logger
 from openpyxl.styles import Alignment
@@ -82,9 +83,7 @@ class Summator(BaseOperations):
     def __init__(self, path: Path, template: str):
         super().__init__(path)
         self.template = template
-        self.type = (
-            "факт" if "import-package-units-template" in self.template else "план"
-        )
+        self.type = "факт" if "import-package-units-template" in self.template else "план"
 
     @property
     def columns(self) -> dict[str, str]:
@@ -102,8 +101,12 @@ class Summator(BaseOperations):
             }
 
     def read_file(self, filename: Path) -> pd.DataFrame:
-        df = pd.read_excel(filename, usecols="A,B,C").astype(self.columns)
-        return df
+        try:
+            df = pd.read_excel(filename).astype(self.columns)
+            return df[list(self.columns)]
+        except Exception as e:
+            logger.error(f"Ошибка чтения файла {filename}: {e}")
+            raise
 
     def read_dir(self) -> Generator[pd.DataFrame]:
         for f in self.path.rglob(self.template):
@@ -123,11 +126,9 @@ class Summator(BaseOperations):
                 )[sum_col]
                 .sum()
             ).query(f"`{sum_col}` > 0")
-            articul_col = [
-                k for k, v in self.columns.items() if "артикул" in k.lower()
-            ][0]
-            result = result.sort_values(by=articul_col, ascending=True)
+            result = result.sort_values(by=sum_col, ascending=False)
             self.to_excel_with_format(result, gen_file, "Сводная")
+            logger.success(f"{gen_file} успешно создан")
         except Exception as e:
             logger.warning(f"Нет файлов сооветствующих шаблону '{self.template}': {e}")
 
@@ -165,9 +166,7 @@ class PrintPakages(BaseOperations):
                         )
                         startrow += 1
 
-                        df.to_excel(
-                            writer, index=False, startrow=startrow, sheet_name="Сводная"
-                        )
+                        df.to_excel(writer, index=False, startrow=startrow, sheet_name="Сводная")
                         startrow += len(df) + 1
                         worksheet = writer.sheets["Сводная"]
                         self.format(worksheet, df)
@@ -208,9 +207,7 @@ class PackageCollector(BaseOperations):
                 "количество": "Int64",
             }
         )
-        self.to_excel_with_format(
-            df, self.path / self.template_fn, "Товарный состав", index=True
-        )
+        self.to_excel_with_format(df, self.path / self.template_fn, "Товарный состав", index=True)
 
     @staticmethod
     def read_file(filename: Path) -> pd.DataFrame:
@@ -222,9 +219,7 @@ class PackageCollector(BaseOperations):
             logger.error(f"Отсутствует файл с товарами {self.products_fn}")
             return
 
-        products_df = pd.read_excel(
-            self.products_fn, usecols="A,D", skiprows=1
-        ).convert_dtypes()
+        products_df = pd.read_excel(self.products_fn, usecols="A,D", skiprows=1).convert_dtypes()
         products_df["Артикул"] = products_df["Артикул"].str.replace("'", "")
 
         for f in self.path.rglob("import-package-units-template*.xlsx"):
@@ -234,9 +229,9 @@ class PackageCollector(BaseOperations):
             if df["Артикул товара"].isna().any():
                 template_file = f.parent / self.template_fn
                 if template_file.exists():
-                    template_df = pd.read_excel(
-                        f.parent / self.template_fn, usecols="A,C"
-                    ).query("количество > 0")
+                    template_df = pd.read_excel(f.parent / self.template_fn, usecols="A,C").query(
+                        "количество > 0"
+                    )
 
                     collected_df = template_df.merge(
                         products_df, left_on="артикул", right_on="Артикул", how="inner"
