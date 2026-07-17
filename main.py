@@ -237,7 +237,7 @@ class PackageCollector(BaseOperations):
                     collected_df = template_df.merge(
                         products_df, left_on="артикул", right_on="Артикул", how="inner"
                     )
-                    df["ШК товара"] = collected_df["Barcode"]
+                    df["ШК товара"] = collected_df["Штрихкод (Серийный номер / EAN)"]
                     df["Артикул товара"] = collected_df["артикул"]
                     df["Кол-во товаров"] = collected_df["количество"]
                     df = df.astype(
