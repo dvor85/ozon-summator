@@ -4,10 +4,13 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
+    "httpx>=0.28.1",
     "loguru>=0.7.3",
     "mypy>=1.11",
     "openpyxl>=3.1.5",
     "pandas>=3.0.3",
     "pandas-stubs>=3.0.3.260530",
+    "pydantic-settings>=2.15.0",
     "pyinstaller>=6.20.0",
+    "requests>=2.34.2",
 ]

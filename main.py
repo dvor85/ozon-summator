@@ -1,16 +1,20 @@
-import string
+import time
 import warnings
 from argparse import ArgumentParser
+from collections import defaultdict
 from collections.abc import Generator
 from pathlib import Path
 
 import pandas as pd
 from loguru import logger
-from openpyxl.styles import Alignment
 
-warnings.filterwarnings(
-    "ignore", message="Workbook contains no default style, apply openpyxl's default"
-)
+from base_operations import BaseOperations
+from config import get_settings
+from ozon_seller import OzonApi, OzonSellerError
+
+settings = get_settings()
+
+warnings.filterwarnings("ignore", message="Workbook contains no default style, apply openpyxl's default")
 
 
 def get_options():
@@ -33,50 +37,13 @@ def get_options():
         help="Сгенерировать шаблон поставки товаров",
         action="store_true",
     )
+    parser.add_argument(
+        "-d",
+        "--draft-id",
+        help="ID черновика поставки",
+        type=int,
+    )
     return parser.parse_args()
-
-
-class BaseOperations:
-    def __init__(self, path: Path):
-        self.path = Path(path)
-        self.package_units = self.path / "Грузоместа.xlsx"
-        self.template_fn = "Шаблон поставки товаров.xlsx"
-
-    @property
-    def products_fn(self) -> Path | None:
-        for f in self.path.glob("Товары*.xlsx"):
-            return f
-        return None
-
-    def to_excel_with_format(
-        self, df: pd.DataFrame, fn: Path, sheet_name: str, index: bool = False
-    ) -> None:
-        with pd.ExcelWriter(fn) as writer:
-            df.to_excel(writer, index=index, sheet_name=sheet_name)
-            worksheet = writer.sheets[sheet_name]
-            self.format(worksheet, df, index)
-
-    @staticmethod
-    def format(worksheet, df: pd.DataFrame, index: bool = False):
-        left_align = Alignment(horizontal="left")
-        excel_cols = string.ascii_uppercase
-        if index:
-            worksheet.column_dimensions["A"].width = 4
-            worksheet.column_dimensions["A"].alignment = left_align
-            excel_cols = excel_cols[1:]
-        cols = dict(zip(df.columns, excel_cols, strict=False))
-
-        for k, v in cols.items():
-            if "артикул" in k.lower():
-                worksheet.column_dimensions[v].width = 29
-            elif "имя" in k.lower():
-                worksheet.column_dimensions[v].width = 39
-            elif "кол" in k.lower():
-                worksheet.column_dimensions[v].width = 5
-            elif "шк" in k.lower():
-                worksheet.column_dimensions[v].width = 17
-            else:
-                worksheet.column_dimensions[v].width = 10
 
 
 class Summator(BaseOperations):
@@ -174,19 +141,157 @@ class PrintPakages(BaseOperations):
                         logger.warning(f"Ошибка при обработке города {city}: {e}")
             logger.success(f"{gen_file} успешно создан")
         except Exception as e:
-            logger.warning(
-                f"Нет файлов сооветствующих шаблону 'import-package-units-template*.xlsx': {e}"
-            )
+            logger.warning(f"Нет файлов сооветствующих шаблону 'import-package-units-template*.xlsx': {e}")
             gen_file.unlink(missing_ok=True)
 
-    def gen_print_version_by_sheets(self) -> None:
-        with pd.ExcelWriter(self.path / "Грузоместа.xlsx") as writer:
-            for f in self.path.rglob("import-package-units-template*.xlsx"):
-                df = self.read_file(f)
-                city = f.parent.name.capitalize()
-                df.to_excel(writer, index=False, sheet_name=city)
-                worksheet = writer.sheets[city]
-                self.format(worksheet, df)
+
+class OzonSupplier(BaseOperations):
+    def __init__(self, path: Path, ozon_api: OzonApi):
+        super().__init__(path)
+        self.ozon = ozon_api
+        self.supply_info: dict = {}
+        self.all_clusters: list[dict] = []
+        self.timeslots: list[dict] = []
+        self.selected_timeslot: dict = {}
+        self.draft_id: int = 0
+        self.draft_info: dict = {}
+        self.warehouses: list[dict] = []
+        self.selected_warehouse_id: int = settings.ozon.warehouse_id
+
+    def get_all_clusters(self):
+        return self.ozon.get_clusters().get("result", [])
+
+    def get_warehouses(self, search: str) -> list[dict]:
+        return self.ozon.get_dbo_warehouses(search=search).get("search", [])
+
+    def build_draft_payload(self) -> dict:
+        clusters_info = defaultdict(list)
+        result = {}
+        if not (self.products_fn and self.products_fn.exists()):
+            logger.error(f"Отсутствует файл с товарами {self.products_fn}")
+            raise ValueError(f"Отсутствует файл с товарами {self.products_fn}")
+
+        products_df = pd.read_excel(self.products_fn, usecols="A,C", skiprows=1).convert_dtypes()
+        products_df["Артикул"] = products_df["Артикул"].str.replace("'", "")
+
+        for f in self.path.rglob(self.template_fn):
+            try:
+                template_df = pd.read_excel(f, usecols="A,C").query("количество > 0")
+                if not template_df.empty:
+                    merged_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
+                    city = f.parent.name.lower()
+                    logger.info(f"Обработка города {city}...")
+                    for cluster in self.all_clusters:
+                        if cluster_id := cluster.get("macrolocal_cluster_id"):
+                            cluster_data = cluster["data"]
+                            cluster_name = cluster_data["macrolocal_cluster"]["name"].lower()
+                            if city in cluster_name:
+                                logger.success(f"Кластер найден {cluster_name}: {cluster_id}")
+                                for offer in merged_df.to_dict(orient="records"):
+                                    clusters_info[cluster_id].append(
+                                        {"quantity": offer["количество"], "sku": offer["SKU"]}
+                                    )
+            except Exception as e:
+                logger.warning(e)
+
+        result["clusters_info"] = [
+            {"macrolocal_cluster_id": cluster_id, "items": items} for cluster_id, items in clusters_info.items()
+        ]
+        result["deletion_sku_mode"] = "PARTIAL"
+        result["delivery_info"] = {
+            "drop_off_warehouse": {
+                "warehouse_id": self.selected_warehouse_id,
+                "warehouse_type": "CROSS_DOCK",
+            },
+            "type": "DROPOFF",
+        }
+        return result
+
+    def create_draft(self) -> int:
+        draft_payload = self.build_draft_payload()
+        if draft_payload["clusters_info"]:
+            draft_res = self.ozon.draft_create(data=draft_payload)
+            if errors := draft_res.get("errors", []):
+                raise OzonSellerError(message=f"Ошибка при создании черновика: {errors}", code=draft_res.get("code"))
+
+            logger.info(f"draft_id={draft_res.get('draft_id')}")
+            return draft_res["draft_id"]
+        raise OzonSellerError(message="Не заполнены кластеры для черновика")
+
+    def get_timeslots(self) -> list[dict]:
+        selected_clusters = self.draft_info["clusters"]
+        timeslot_res = self.ozon.get_timeslots(selected_clusters=selected_clusters, draft_id=self.draft_id)
+        if not timeslot_res["result"]:
+            raise OzonSellerError(message=f"Ошибка получения слотов, errors={timeslot_res['error_reason']}")
+        timeslots = timeslot_res["result"]["drop_off_warehouse_timeslots"]["days"]
+        return sorted(timeslots, key=lambda x: x["date_in_timezone"])
+
+    def select_timeslot_date(self) -> dict:
+        if self.timeslots:
+            for i, ts in enumerate(self.timeslots):
+                print(f"{i}: {ts['date_in_timezone']}")
+            try:
+                if timeslot := int(input("Выберите дату (по умолчанию ближайшая): ")):
+                    logger.success(f"Выбрана дата {self.timeslots[timeslot]['date_in_timezone']}")
+                    return self.timeslots[timeslot]
+            except Exception as e:
+                timeslot = 0
+                logger.warning(
+                    f"Выбрана ближайшая дата {self.timeslots[timeslot]['date_in_timezone']} по умолчанию, {e}"
+                )
+
+            return self.timeslots[timeslot]
+        raise OzonSellerError(message="Отсутствуют временные слоты")
+
+    def get_draft_info(self, draft_id: int) -> dict:
+        draft_info = self.ozon.get_draft_info(draft_id=draft_id)
+
+        if draft_info["status"] != "SUCCESS":
+            raise OzonSellerError(
+                message=f"Проблема с черновиком {draft_id}, status={draft_info['status']} errors={draft_info['errors']}"
+            )
+        return draft_info
+
+    def create_supply_by_draft(self):
+        selected_clusters = self.draft_info["clusters"]
+        result = self.ozon.supply_create_by_draft(
+            selected_clusters=selected_clusters,
+            draft_id=self.draft_id,
+            timeslot=self.selected_timeslot,
+        )
+        if errors := result.get("error_reasons"):
+            raise OzonSellerError(message=f"Проблема при создании поставки {self.draft_id}, errors={errors}")
+
+        logger.success(f"Поставка из черновика {self.draft_id} создана")
+
+    def select_warehouse(self) -> int | None:
+        for i, wh in enumerate(self.warehouses):
+            print(f"{i}: {wh['name']} ({wh['address']})")
+
+        try:
+            if warehouse := int(input("Выберите склад: ")):
+                logger.success(f"Выбран склад {self.warehouses[warehouse]['name']}")
+                return self.warehouses[warehouse]["warehouse_id"]
+        except Exception as e:
+            logger.warning(f"Выбран склад по умолчанию, {e}")
+
+    def run(self, draft_id: int | None = None):
+        if not draft_id:
+            self.all_clusters = self.get_all_clusters()
+            search = input("Введите город для поиска склада (по умолчанию 'димитровград'): ") or "димитровград"
+            self.warehouses = self.get_warehouses(search=search)
+            if selected_warehouse := self.select_warehouse():
+                self.selected_warehouse_id = selected_warehouse
+
+            self.draft_id = self.create_draft()
+            time.sleep(5)
+        else:
+            self.draft_id = draft_id
+
+        self.draft_info = self.get_draft_info(self.draft_id)
+        self.timeslots = self.get_timeslots()
+        self.selected_timeslot = self.select_timeslot_date()
+        self.create_supply_by_draft()
 
 
 class PackageCollector(BaseOperations):
@@ -199,9 +304,7 @@ class PackageCollector(BaseOperations):
         df = pd.read_excel(self.products_fn, usecols="A,E", skiprows=1).convert_dtypes()
         df["Артикул"] = df["Артикул"].str.replace("'", "")
         df["количество"] = 0
-        df = df.rename(
-            columns={"Артикул": "артикул", "Название товара": "имя (необязательно)"}
-        ).astype(
+        df = df.rename(columns={"Артикул": "артикул", "Название товара": "имя (необязательно)"}).astype(
             {
                 "артикул": "string",
                 "имя (необязательно)": "string",
@@ -230,13 +333,9 @@ class PackageCollector(BaseOperations):
             if df["Артикул товара"].isna().any():
                 template_file = f.parent / self.template_fn
                 if template_file.exists():
-                    template_df = pd.read_excel(f.parent / self.template_fn, usecols="A,C").query(
-                        "количество > 0"
-                    )
+                    template_df = pd.read_excel(f.parent / self.template_fn, usecols="A,C").query("количество > 0")
 
-                    collected_df = template_df.merge(
-                        products_df, left_on="артикул", right_on="Артикул", how="inner"
-                    )
+                    collected_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
                     df["ШК товара"] = collected_df["Штрихкод (Серийный номер / EAN)"]
                     df["Артикул товара"] = collected_df["артикул"]
                     df["Кол-во товаров"] = collected_df["количество"]
@@ -261,8 +360,14 @@ if __name__ == "__main__":
     logger.info(f"Рабочая директория: {root_path}")
 
     collector = PackageCollector(root_path)
+
     if options.template:
         collector.gen_template()
+    elif options.draft_id >= 0:
+        with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
+            supplier = OzonSupplier(root_path, ozon_api=ozon)
+            supplier.run(draft_id=options.draft_id)
+
     else:
         collector.run()
 
