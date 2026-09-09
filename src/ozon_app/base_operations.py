@@ -1,4 +1,5 @@
 import string
+from asyncio.log import logger
 from pathlib import Path
 
 import pandas as pd
@@ -12,10 +13,43 @@ class BaseOperations:
         self.template_fn = "Шаблон поставки товаров.xlsx"
 
     @property
+    def template_columns(self) -> dict[str, str]:
+        return {
+            "артикул": "string",
+            "имя (необязательно)": "string",
+            "количество": "Int64",
+        }
+
+    @property
+    def product_columns(self) -> dict[str, str]:
+        return {
+            "Артикул": "string",
+            "SKU": "string",
+            "Штрихкод (Серийный номер / EAN)": "string",
+        }
+
+    @property
     def products_fn(self) -> Path | None:
         for f in self.path.glob("Товары*.xlsx"):
             return f
         return None
+
+    def read_template_file(self, filename: Path) -> pd.DataFrame:
+        try:
+            df = pd.read_excel(filename).astype(self.template_columns)
+            return df[list(self.template_columns)]
+        except Exception as e:
+            logger.error(f"Ошибка чтения файла {filename}: {e}")
+            raise
+
+    def read_product_file(self) -> pd.DataFrame:
+        try:
+            filename = self.products_fn
+            df = pd.read_excel(filename, skiprows=1).astype(self.product_columns)
+            return df[list(self.product_columns)]
+        except Exception as e:
+            logger.error(f"Ошибка чтения файла {filename}: {e}")
+            raise
 
     def to_excel_with_format(self, df: pd.DataFrame, fn: Path, sheet_name: str, index: bool = False) -> None:
         with pd.ExcelWriter(fn) as writer:

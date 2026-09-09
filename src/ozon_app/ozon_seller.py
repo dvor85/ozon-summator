@@ -53,6 +53,24 @@ class OzonApi:
 
         return self._process_response(resp_stock)
 
+    def get_order_info(self, draft_id: int) -> dict:
+        data = {"draft_id": draft_id}
+        resp_stock = self.session.post(
+            url="https://api-seller.ozon.ru/v2/draft/supply/create/status",
+            json=data,
+        )
+
+        return self._process_response(resp_stock)
+
+    def get_order_info(self, draft_id: int) -> dict:
+        data = {"draft_id": draft_id}
+        resp_stock = self.session.post(
+            url="https://api-seller.ozon.ru/v2/draft/supply/create/status",
+            json=data,
+        )
+
+        return self._process_response(resp_stock)
+
     def get_timeslots(self, selected_clusters: list[dict], draft_id: int) -> dict:
         date_from = datetime.date.today()
         date_to = date_from + datetime.timedelta(days=7)

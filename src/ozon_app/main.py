@@ -4,17 +4,22 @@ from argparse import ArgumentParser
 from collections import defaultdict
 from collections.abc import Generator
 from pathlib import Path
+from typing import Annotated
 
 import pandas as pd
+from core.config import get_settings
 from loguru import logger
-
-from base_operations import BaseOperations
-from config import get_settings
-from ozon_seller import OzonApi, OzonSellerError
+from ozon_app.base_operations import BaseOperations
+from ozon_app.ozon_seller import OzonApi, OzonSellerError
+from rich import print
+from rich.prompt import IntPrompt
+from typer import Typer, Option, Argument
 
 settings = get_settings()
 
 warnings.filterwarnings("ignore", message="Workbook contains no default style, apply openpyxl's default")
+
+app = Typer()
 
 
 def get_options():
@@ -154,6 +159,7 @@ class OzonSupplier(BaseOperations):
         self.timeslots: list[dict] = []
         self.selected_timeslot: dict = {}
         self.draft_id: int = 0
+        self.order_id: int = 0
         self.draft_info: dict = {}
         self.warehouses: list[dict] = []
         self.selected_warehouse_id: int = settings.ozon.warehouse_id
@@ -164,6 +170,8 @@ class OzonSupplier(BaseOperations):
     def get_warehouses(self, search: str) -> list[dict]:
         return self.ozon.get_dbo_warehouses(search=search).get("search", [])
 
+    def build_cargoes_payload(self, supply_ids: list[int]): ...
+
     def build_draft_payload(self) -> dict:
         clusters_info = defaultdict(list)
         result = {}
@@ -171,12 +179,14 @@ class OzonSupplier(BaseOperations):
             logger.error(f"Отсутствует файл с товарами {self.products_fn}")
             raise ValueError(f"Отсутствует файл с товарами {self.products_fn}")
 
-        products_df = pd.read_excel(self.products_fn, usecols="A,C", skiprows=1).convert_dtypes()
+        # products_df = pd.read_excel(self.products_fn, usecols="A,C", skiprows=1).convert_dtypes()
+        products_df = self.read_product_file()
         products_df["Артикул"] = products_df["Артикул"].str.replace("'", "")
 
         for f in self.path.rglob(self.template_fn):
             try:
-                template_df = pd.read_excel(f, usecols="A,C").query("количество > 0")
+                template_df = self.read_template_file(f)
+                template_df = template_df.query("количество > 0")
                 if not template_df.empty:
                     merged_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
                     city = f.parent.name.lower()
@@ -231,7 +241,7 @@ class OzonSupplier(BaseOperations):
             for i, ts in enumerate(self.timeslots):
                 print(f"{i}: {ts['date_in_timezone']}")
             try:
-                if timeslot := int(input("Выберите дату (по умолчанию ближайшая): ")):
+                if timeslot := IntPrompt.ask("Выберите дату (по умолчанию ближайшая)", default=0):
                     logger.success(f"Выбрана дата {self.timeslots[timeslot]['date_in_timezone']}")
                     return self.timeslots[timeslot]
             except Exception as e:
@@ -264,12 +274,22 @@ class OzonSupplier(BaseOperations):
 
         logger.success(f"Поставка из черновика {self.draft_id} создана")
 
+    def get_order_info(self) -> int:
+        result = self.ozon.get_order_info(self.draft_id)
+        if errors := result.get("error_reasons"):
+            raise OzonSellerError(message=f"Проблема при создании поставки {self.draft_id}, errors={errors}")
+
+        order_id = result["order_id"]
+
+        logger.success(f"Поставка из черновика {order_id} создана, status={result['status']}")
+        return order_id
+
     def select_warehouse(self) -> int | None:
         for i, wh in enumerate(self.warehouses):
             print(f"{i}: {wh['name']} ({wh['address']})")
 
         try:
-            if warehouse := int(input("Выберите склад: ")):
+            if warehouse := IntPrompt.ask("Выберите склад", default=0):
                 logger.success(f"Выбран склад {self.warehouses[warehouse]['name']}")
                 return self.warehouses[warehouse]["warehouse_id"]
         except Exception as e:
@@ -292,6 +312,7 @@ class OzonSupplier(BaseOperations):
         self.timeslots = self.get_timeslots()
         self.selected_timeslot = self.select_timeslot_date()
         self.create_supply_by_draft()
+        self.order_id = self.get_order_info()
 
 
 class PackageCollector(BaseOperations):
@@ -323,7 +344,7 @@ class PackageCollector(BaseOperations):
             logger.error(f"Отсутствует файл с товарами {self.products_fn}")
             return
 
-        products_df = pd.read_excel(self.products_fn, usecols="A,D", skiprows=1).convert_dtypes()
+        products_df = self.read_product_file()
         products_df["Артикул"] = products_df["Артикул"].str.replace("'", "")
 
         for f in self.path.rglob("import-package-units-template*.xlsx"):
@@ -333,7 +354,7 @@ class PackageCollector(BaseOperations):
             if df["Артикул товара"].isna().any():
                 template_file = f.parent / self.template_fn
                 if template_file.exists():
-                    template_df = pd.read_excel(f.parent / self.template_fn, usecols="A,C").query("количество > 0")
+                    template_df = self.read_template_file(f.parent / self.template_fn).query("количество > 0")
 
                     collected_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
                     df["ШК товара"] = collected_df["Штрихкод (Серийный номер / EAN)"]
@@ -354,19 +375,33 @@ class PackageCollector(BaseOperations):
                 logger.warning(f"Файл {f} уже содержит данные, пропускаем...")
 
 
-if __name__ == "__main__":
-    options = get_options()
-    root_path = Path(options.root_path).absolute()
+#
+# @app.command()
+# def test():
+#
+#     print("asdfasdfasdf")
+#     a = IntPrompt.ask(
+#         "select",
+#     )
+
+
+@app.command()
+def main(
+    root_path: Annotated[Path, Argument(help="Путь к папке с данными.")],
+    template: Annotated[bool, Option(help="Генерировать шаблон")] = False,
+    draft_id: Annotated[int | None, Option(help="Id черновика")] = None,
+):
+    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
 
     collector = PackageCollector(root_path)
 
-    if options.template:
+    if template:
         collector.gen_template()
-    elif options.draft_id >= 0:
+    elif draft_id:
         with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
             supplier = OzonSupplier(root_path, ozon_api=ozon)
-            supplier.run(draft_id=options.draft_id)
+            supplier.run(draft_id=draft_id)
 
     else:
         collector.run()
