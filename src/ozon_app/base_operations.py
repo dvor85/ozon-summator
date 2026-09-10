@@ -1,9 +1,12 @@
 import string
+import warnings
 from asyncio.log import logger
 from pathlib import Path
 
 import pandas as pd
 from openpyxl.styles import Alignment
+
+warnings.filterwarnings("ignore", message="Workbook contains no default style, apply openpyxl's default")
 
 
 class BaseOperations:

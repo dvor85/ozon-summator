@@ -1,7 +1,7 @@
 import datetime
 from dataclasses import dataclass
 
-import requests
+import httpx
 
 
 @dataclass
@@ -16,62 +16,53 @@ class OzonApi:
             "Client-Id": client_id,
             "Api-Key": api_key,
         }
-        self.session = requests.Session()
-        self.session.headers.update(self.headers)
+        self.session = httpx.AsyncClient(headers=self.headers)
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.session.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.session.aclose()
 
-    def _process_response(self, res: requests.Response) -> dict:
+    @staticmethod
+    def _process_response(res: httpx.Response) -> dict:
         jdata = res.json()
         if res.status_code != 200:
             raise Exception(f"Error {jdata.get('code')}: {jdata.get('message')}")
         return jdata
 
-    def get_clusters(self):
-        resp_stock = self.session.post(url="https://api-seller.ozon.ru/v2/cluster/list")
+    async def get_clusters(self):
+        resp_stock = await self.session.post(url="https://api-seller.ozon.ru/v2/cluster/list")
 
         return self._process_response(resp_stock)
 
-    def draft_create(self, data: dict) -> dict:
-        resp_stock = self.session.post(
+    async def draft_create(self, data: dict) -> dict:
+        resp_stock = await self.session.post(
             url="https://api-seller.ozon.ru/v1/draft/multi-cluster/create",
             json=data,
         )
 
         return self._process_response(resp_stock)
 
-    def get_draft_info(self, draft_id: int) -> dict:
+    async def get_draft_info(self, draft_id: int) -> dict:
         data = {"draft_id": draft_id}
-        resp_stock = self.session.post(
+        resp_stock = await self.session.post(
             url="https://api-seller.ozon.ru/v2/draft/create/info",
             json=data,
         )
 
         return self._process_response(resp_stock)
 
-    def get_order_info(self, draft_id: int) -> dict:
+    async def get_order_info(self, draft_id: int) -> dict:
         data = {"draft_id": draft_id}
-        resp_stock = self.session.post(
+        resp_stock = await self.session.post(
             url="https://api-seller.ozon.ru/v2/draft/supply/create/status",
             json=data,
         )
 
         return self._process_response(resp_stock)
 
-    def get_order_info(self, draft_id: int) -> dict:
-        data = {"draft_id": draft_id}
-        resp_stock = self.session.post(
-            url="https://api-seller.ozon.ru/v2/draft/supply/create/status",
-            json=data,
-        )
-
-        return self._process_response(resp_stock)
-
-    def get_timeslots(self, selected_clusters: list[dict], draft_id: int) -> dict:
+    async def get_timeslots(self, selected_clusters: list[dict], draft_id: int) -> dict:
         date_from = datetime.date.today()
         date_to = date_from + datetime.timedelta(days=7)
 
@@ -85,14 +76,14 @@ class OzonApi:
             ],
         }
 
-        resp_stock = self.session.post(
+        resp_stock = await self.session.post(
             url="https://api-seller.ozon.ru/v2/draft/timeslot/info",
             json=data,
         )
 
         return self._process_response(resp_stock)
 
-    def supply_create_by_draft(self, selected_clusters: list[dict], draft_id: int, timeslot: dict) -> dict:
+    async def supply_create_by_draft(self, selected_clusters: list[dict], draft_id: int, timeslot: dict) -> dict:
         last_time = timeslot["timeslots"][-1]
         date_from = last_time["from_in_timezone"]
         date_to = last_time["to_in_timezone"]
@@ -105,16 +96,16 @@ class OzonApi:
             "timeslot": {"from_in_timezone": date_from, "to_in_timezone": date_to},
             "supply_type": "MULTI_CLUSTER",
         }
-        resp_stock = self.session.post(
+        resp_stock = await self.session.post(
             url="https://api-seller.ozon.ru/v2/draft/supply/create",
             json=data,
         )
 
         return self._process_response(resp_stock)
 
-    def get_dbo_warehouses(self, search: str) -> dict:
+    async def get_dbo_warehouses(self, search: str) -> dict:
         data = {"filter_by_supply_type": ["CREATE_TYPE_CROSSDOCK"], "search": search}
-        resp_stock = self.session.post(
+        resp_stock = await self.session.post(
             url="https://api-seller.ozon.ru/v1/warehouse/fbo/list",
             json=data,
         )

@@ -1,9 +1,11 @@
 [project]
 name = "ozon-app"
-version = "0.1.0"
+version = "0.1.2"
 description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
+    "cashews>=7.5.0",
+    "diskcache>=5.6.3",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
     "mypy>=1.11",
@@ -14,6 +16,7 @@ dependencies = [
     "pyinstaller>=6.20.0",
     "requests>=2.34.2",
     "rich>=15.0.0",
+    "stamina>=26.1.0",
     "typer>=0.27.2",
 ]
 

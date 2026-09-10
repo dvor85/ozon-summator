@@ -1,54 +1,24 @@
-import time
-import warnings
-from argparse import ArgumentParser
-from collections import defaultdict
+import asyncio
 from collections.abc import Generator
 from pathlib import Path
 from typing import Annotated
 
 import pandas as pd
-from core.config import get_settings
 from loguru import logger
-from ozon_app.base_operations import BaseOperations
-from ozon_app.ozon_seller import OzonApi, OzonSellerError
-from rich import print
-from rich.prompt import IntPrompt
 from typer import Typer, Option, Argument
+
+from core.config import get_settings
+from ozon_app import draft, supply
+from ozon_app.base_operations import BaseOperations
+from ozon_app.ozon_operations import OzonSupplier
+from ozon_app.ozon_seller import OzonApi
 
 settings = get_settings()
 
-warnings.filterwarnings("ignore", message="Workbook contains no default style, apply openpyxl's default")
 
 app = Typer()
-
-
-def get_options():
-    parser = ArgumentParser(
-        prog="ozon",
-        description="Подготовка поставок FBO ozon",
-    )
-    parser.add_argument(
-        "root_path",
-        help="""Путь к папке с данными. Например: 
-        <Товары.xlsx> (Выгрузка товаров из озона), 
-        москва -> 
-            <Шаблон поставки товаров.xlsx> (подготовленный шаблон для загрузки товаров в озон), 
-            [import-package-units-template.xlsx] (выгрузка состава поставки из озона)
-        """,
-    )
-    parser.add_argument(
-        "-t",
-        "--template",
-        help="Сгенерировать шаблон поставки товаров",
-        action="store_true",
-    )
-    parser.add_argument(
-        "-d",
-        "--draft-id",
-        help="ID черновика поставки",
-        type=int,
-    )
-    return parser.parse_args()
+app.add_typer(draft.app, name="draft")
+app.add_typer(supply.app, name="supply")
 
 
 class Summator(BaseOperations):
@@ -150,171 +120,6 @@ class PrintPakages(BaseOperations):
             gen_file.unlink(missing_ok=True)
 
 
-class OzonSupplier(BaseOperations):
-    def __init__(self, path: Path, ozon_api: OzonApi):
-        super().__init__(path)
-        self.ozon = ozon_api
-        self.supply_info: dict = {}
-        self.all_clusters: list[dict] = []
-        self.timeslots: list[dict] = []
-        self.selected_timeslot: dict = {}
-        self.draft_id: int = 0
-        self.order_id: int = 0
-        self.draft_info: dict = {}
-        self.warehouses: list[dict] = []
-        self.selected_warehouse_id: int = settings.ozon.warehouse_id
-
-    def get_all_clusters(self):
-        return self.ozon.get_clusters().get("result", [])
-
-    def get_warehouses(self, search: str) -> list[dict]:
-        return self.ozon.get_dbo_warehouses(search=search).get("search", [])
-
-    def build_cargoes_payload(self, supply_ids: list[int]): ...
-
-    def build_draft_payload(self) -> dict:
-        clusters_info = defaultdict(list)
-        result = {}
-        if not (self.products_fn and self.products_fn.exists()):
-            logger.error(f"Отсутствует файл с товарами {self.products_fn}")
-            raise ValueError(f"Отсутствует файл с товарами {self.products_fn}")
-
-        # products_df = pd.read_excel(self.products_fn, usecols="A,C", skiprows=1).convert_dtypes()
-        products_df = self.read_product_file()
-        products_df["Артикул"] = products_df["Артикул"].str.replace("'", "")
-
-        for f in self.path.rglob(self.template_fn):
-            try:
-                template_df = self.read_template_file(f)
-                template_df = template_df.query("количество > 0")
-                if not template_df.empty:
-                    merged_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
-                    city = f.parent.name.lower()
-                    logger.info(f"Обработка города {city}...")
-                    for cluster in self.all_clusters:
-                        if cluster_id := cluster.get("macrolocal_cluster_id"):
-                            cluster_data = cluster["data"]
-                            cluster_name = cluster_data["macrolocal_cluster"]["name"].lower()
-                            if city in cluster_name:
-                                logger.success(f"Кластер найден {cluster_name}: {cluster_id}")
-                                for offer in merged_df.to_dict(orient="records"):
-                                    clusters_info[cluster_id].append(
-                                        {"quantity": offer["количество"], "sku": offer["SKU"]}
-                                    )
-            except Exception as e:
-                logger.warning(e)
-
-        result["clusters_info"] = [
-            {"macrolocal_cluster_id": cluster_id, "items": items} for cluster_id, items in clusters_info.items()
-        ]
-        result["deletion_sku_mode"] = "PARTIAL"
-        result["delivery_info"] = {
-            "drop_off_warehouse": {
-                "warehouse_id": self.selected_warehouse_id,
-                "warehouse_type": "CROSS_DOCK",
-            },
-            "type": "DROPOFF",
-        }
-        return result
-
-    def create_draft(self) -> int:
-        draft_payload = self.build_draft_payload()
-        if draft_payload["clusters_info"]:
-            draft_res = self.ozon.draft_create(data=draft_payload)
-            if errors := draft_res.get("errors", []):
-                raise OzonSellerError(message=f"Ошибка при создании черновика: {errors}", code=draft_res.get("code"))
-
-            logger.info(f"draft_id={draft_res.get('draft_id')}")
-            return draft_res["draft_id"]
-        raise OzonSellerError(message="Не заполнены кластеры для черновика")
-
-    def get_timeslots(self) -> list[dict]:
-        selected_clusters = self.draft_info["clusters"]
-        timeslot_res = self.ozon.get_timeslots(selected_clusters=selected_clusters, draft_id=self.draft_id)
-        if not timeslot_res["result"]:
-            raise OzonSellerError(message=f"Ошибка получения слотов, errors={timeslot_res['error_reason']}")
-        timeslots = timeslot_res["result"]["drop_off_warehouse_timeslots"]["days"]
-        return sorted(timeslots, key=lambda x: x["date_in_timezone"])
-
-    def select_timeslot_date(self) -> dict:
-        if self.timeslots:
-            for i, ts in enumerate(self.timeslots):
-                print(f"{i}: {ts['date_in_timezone']}")
-            try:
-                if timeslot := IntPrompt.ask("Выберите дату (по умолчанию ближайшая)", default=0):
-                    logger.success(f"Выбрана дата {self.timeslots[timeslot]['date_in_timezone']}")
-                    return self.timeslots[timeslot]
-            except Exception as e:
-                timeslot = 0
-                logger.warning(
-                    f"Выбрана ближайшая дата {self.timeslots[timeslot]['date_in_timezone']} по умолчанию, {e}"
-                )
-
-            return self.timeslots[timeslot]
-        raise OzonSellerError(message="Отсутствуют временные слоты")
-
-    def get_draft_info(self, draft_id: int) -> dict:
-        draft_info = self.ozon.get_draft_info(draft_id=draft_id)
-
-        if draft_info["status"] != "SUCCESS":
-            raise OzonSellerError(
-                message=f"Проблема с черновиком {draft_id}, status={draft_info['status']} errors={draft_info['errors']}"
-            )
-        return draft_info
-
-    def create_supply_by_draft(self):
-        selected_clusters = self.draft_info["clusters"]
-        result = self.ozon.supply_create_by_draft(
-            selected_clusters=selected_clusters,
-            draft_id=self.draft_id,
-            timeslot=self.selected_timeslot,
-        )
-        if errors := result.get("error_reasons"):
-            raise OzonSellerError(message=f"Проблема при создании поставки {self.draft_id}, errors={errors}")
-
-        logger.success(f"Поставка из черновика {self.draft_id} создана")
-
-    def get_order_info(self) -> int:
-        result = self.ozon.get_order_info(self.draft_id)
-        if errors := result.get("error_reasons"):
-            raise OzonSellerError(message=f"Проблема при создании поставки {self.draft_id}, errors={errors}")
-
-        order_id = result["order_id"]
-
-        logger.success(f"Поставка из черновика {order_id} создана, status={result['status']}")
-        return order_id
-
-    def select_warehouse(self) -> int | None:
-        for i, wh in enumerate(self.warehouses):
-            print(f"{i}: {wh['name']} ({wh['address']})")
-
-        try:
-            if warehouse := IntPrompt.ask("Выберите склад", default=0):
-                logger.success(f"Выбран склад {self.warehouses[warehouse]['name']}")
-                return self.warehouses[warehouse]["warehouse_id"]
-        except Exception as e:
-            logger.warning(f"Выбран склад по умолчанию, {e}")
-
-    def run(self, draft_id: int | None = None):
-        if not draft_id:
-            self.all_clusters = self.get_all_clusters()
-            search = input("Введите город для поиска склада (по умолчанию 'димитровград'): ") or "димитровград"
-            self.warehouses = self.get_warehouses(search=search)
-            if selected_warehouse := self.select_warehouse():
-                self.selected_warehouse_id = selected_warehouse
-
-            self.draft_id = self.create_draft()
-            time.sleep(5)
-        else:
-            self.draft_id = draft_id
-
-        self.draft_info = self.get_draft_info(self.draft_id)
-        self.timeslots = self.get_timeslots()
-        self.selected_timeslot = self.select_timeslot_date()
-        self.create_supply_by_draft()
-        self.order_id = self.get_order_info()
-
-
 class PackageCollector(BaseOperations):
     def gen_template(self) -> None:
         logger.info(f"Генерация файла '{self.template_fn}'")
@@ -375,20 +180,9 @@ class PackageCollector(BaseOperations):
                 logger.warning(f"Файл {f} уже содержит данные, пропускаем...")
 
 
-#
-# @app.command()
-# def test():
-#
-#     print("asdfasdfasdf")
-#     a = IntPrompt.ask(
-#         "select",
-#     )
-
-
-@app.command()
-def main(
+async def _main(
     root_path: Annotated[Path, Argument(help="Путь к папке с данными.")],
-    template: Annotated[bool, Option(help="Генерировать шаблон")] = False,
+    template: Annotated[bool, Option("--template", help="Генерировать шаблон")] = False,
     draft_id: Annotated[int | None, Option(help="Id черновика")] = None,
 ):
     root_path = Path(root_path).absolute()
@@ -399,9 +193,9 @@ def main(
     if template:
         collector.gen_template()
     elif draft_id:
-        with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
+        async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
             supplier = OzonSupplier(root_path, ozon_api=ozon)
-            supplier.run(draft_id=draft_id)
+            await supplier.run(draft_id=draft_id)
 
     else:
         collector.run()
@@ -414,3 +208,16 @@ def main(
 
         print_pakages = PrintPakages(root_path)
         print_pakages.gen_print_version_in_sheet()
+
+
+@app.command()
+def main(
+    root_path: Annotated[Path, Argument(help="Путь к папке с данными.")],
+    template: Annotated[bool, Option("--template", help="Генерировать шаблон")] = False,
+    draft_id: Annotated[int | None, Option(help="Id черновика")] = None,
+):
+    asyncio.run(_main(root_path=root_path, template=template, draft_id=draft_id))
+
+
+if __name__ == "__main__":
+    app()

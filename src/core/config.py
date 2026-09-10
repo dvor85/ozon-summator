@@ -1,8 +1,13 @@
 from functools import lru_cache
 
+from cashews import cache
 from dotenv import find_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from core.constants import BASE_DIR
+
+cache.setup("disk://", directory=f"{BASE_DIR}/.cache", check_interval=10, shards=0)
 
 
 class BaseConfig(BaseSettings):
