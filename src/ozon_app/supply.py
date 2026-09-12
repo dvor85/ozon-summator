@@ -16,10 +16,7 @@ settings = get_settings()
 app = Typer()
 
 
-async def _create(
-    root_path: Annotated[Path, Argument(help="Путь к папке с данными.")],
-    force: Annotated[bool, Option("--force", help="Принудительное создание черновика.")] = False,
-):
+async def _create(root_path: Path, force: bool = False):
     root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
     if force:
@@ -27,10 +24,11 @@ async def _create(
 
     async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
         supplier = OzonSupplier(root_path, ozon_api=ozon)
-        if draft_id := await cache.get("draft_id"):
-            supplier.draft_info = await supplier.get_draft_info(draft_id)
+        await supplier.initialize()
+        if draft_id := supplier.draft_id:
+            await supplier.populate_draft_info(draft_id)
             supplier.print_draft_info()
-            await supplier.get_timeslots()
+            await supplier.populate_timeslots()
             supplier.select_timeslot_date()
             await supplier.create_supply_by_draft()
             # self.order_id = await self.get_order_info()

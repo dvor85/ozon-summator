@@ -53,6 +53,23 @@ class OzonApi:
 
         return self._process_response(resp_stock)
 
+    async def rename_articles(self, data: dict) -> dict:
+        resp_stock = await self.session.post(
+            url="https://api-seller.ozon.ru/v1/product/update/offer-id",
+            json=data,
+        )
+
+        return self._process_response(resp_stock)
+
+    async def get_supply_orders(self) -> dict:
+        data = {"draft_id": draft_id}
+        resp_stock = await self.session.post(
+            url="https://api-seller.ozon.ru/v3/supply-order/list",
+            json=data,
+        )
+
+        return self._process_response(resp_stock)
+
     async def get_order_info(self, draft_id: int) -> dict:
         data = {"draft_id": draft_id}
         resp_stock = await self.session.post(

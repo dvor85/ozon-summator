@@ -1,10 +1,12 @@
 import asyncio
 from collections.abc import Generator
+from itertools import chain
 from pathlib import Path
 from typing import Annotated
 
 import pandas as pd
 from loguru import logger
+from rich import print
 from typer import Typer, Option, Argument
 
 from core.config import get_settings
@@ -137,7 +139,7 @@ class PackageCollector(BaseOperations):
                 "количество": "Int64",
             }
         )
-        self.to_excel_with_format(df, self.path / self.template_fn, "Товарный состав", index=True)
+        self.to_excel_with_format(df, self.path / self.template_fn, "Товарный состав", index=False)
 
     @staticmethod
     def read_file(filename: Path) -> pd.DataFrame:
@@ -180,11 +182,31 @@ class PackageCollector(BaseOperations):
                 logger.warning(f"Файл {f} уже содержит данные, пропускаем...")
 
 
-async def _main(
-    root_path: Annotated[Path, Argument(help="Путь к папке с данными.")],
-    template: Annotated[bool, Option("--template", help="Генерировать шаблон")] = False,
-    draft_id: Annotated[int | None, Option(help="Id черновика")] = None,
-):
+async def _rename(root_path: Path):
+    root_path = Path(root_path).absolute()
+    logger.info(f"Рабочая директория: {root_path}")
+    async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
+        supplier = OzonSupplier(root_path, ozon_api=ozon)
+        await supplier.initialize()
+
+        template_fn = root_path / supplier.template_fn
+        df = pd.read_excel(template_fn).convert_dtypes()
+        payload = []
+        for row in df.itertuples():
+            payload.append({"offer_id": row[2], "new_offer_id": f"{row[1]}_{row[2]}"})
+
+        res = await supplier.rename_articles(payload)
+        errors = list(chain(r["errors"] for r in res))
+        print(errors)
+
+
+@app.command()
+def rename(root_path: Annotated[Path, Argument(help="Путь к папке с данными.")]):
+    """Переименование артикулов"""
+    asyncio.run(_rename(root_path))
+
+
+async def _main(root_path: Path, template: bool = False, draft_id: int | None = None):
     root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
 
@@ -195,7 +217,9 @@ async def _main(
     elif draft_id:
         async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
             supplier = OzonSupplier(root_path, ozon_api=ozon)
-            await supplier.run(draft_id=draft_id)
+            await supplier.initialize()
+
+            # await supplier.run(draft_id=draft_id)
 
     else:
         collector.run()

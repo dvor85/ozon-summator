@@ -1,5 +1,6 @@
 import asyncio
 from collections import defaultdict
+from itertools import batched
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ class OzonSupplier(BaseOperations):
         super().__init__(path)
         self.ozon = ozon_api
         self.supply_info: dict = {}
+        self.draft_payload: dict = {}
         self.all_clusters: list[dict] = []
         self.timeslots: list[dict] = []
         self.selected_timeslot: dict = {}
@@ -30,6 +32,13 @@ class OzonSupplier(BaseOperations):
         self.draft_info: dict = {}
         self.warehouses: list[dict] = []
         self.selected_warehouse_id: int = settings.ozon.warehouse_id
+
+    async def initialize(self):
+        self.all_clusters = await cache.get("all_clusters", [])
+        self.selected_warehouse_id = await cache.get("warehouse", settings.ozon.warehouse_id)
+        self.draft_id = await cache.get("draft_id", 0)
+        self.draft_info = await cache.get(f"draft_info:{self.draft_id}", {})
+        self.draft_payload = await cache.get("draft_payload", {})
 
     @cache(ttl="1d", condition=NOT_NONE, key="all_clusters")
     async def populate_all_clusters(self) -> list[dict]:
@@ -50,7 +59,6 @@ class OzonSupplier(BaseOperations):
             logger.error(f"Отсутствует файл с товарами {self.products_fn}")
             raise ValueError(f"Отсутствует файл с товарами {self.products_fn}")
 
-        # products_df = pd.read_excel(self.products_fn, usecols="A,C", skiprows=1).convert_dtypes()
         products_df = self.read_product_file()
         products_df["Артикул"] = products_df["Артикул"].str.replace("'", "")
 
@@ -86,7 +94,16 @@ class OzonSupplier(BaseOperations):
             },
             "type": "DROPOFF",
         }
+        self.draft_payload = result
         return result
+
+    async def rename_articles(self, update_offers: list[dict]) -> list[dict]:
+        results = []
+        for offers in batched(update_offers, 25):
+            data = {"update_offer_id": offers}
+            results.append(await self.ozon.rename_articles(data=data))
+            await asyncio.sleep(1)
+        return results
 
     @cache(ttl="30m", condition=NOT_NONE, key="draft_id")
     async def create_draft(self) -> int:
@@ -101,7 +118,7 @@ class OzonSupplier(BaseOperations):
             return draft_res["draft_id"]
         raise OzonSellerError(message="Не заполнены кластеры для черновика")
 
-    async def get_timeslots(self) -> list[dict]:
+    async def populate_timeslots(self) -> list[dict]:
         selected_clusters = self.draft_info["clusters"]
         timeslot_res = await self.ozon.get_timeslots(selected_clusters=selected_clusters, draft_id=self.draft_id)
         if not timeslot_res["result"]:
@@ -130,7 +147,7 @@ class OzonSupplier(BaseOperations):
 
     @cache(ttl="30m", condition=NOT_NONE, key="draft_info:{draft_id}")
     @retry(attempts=2, wait_initial=5, on=(OzonSellerError,))
-    async def get_draft_info(self, draft_id: int) -> dict:
+    async def populate_draft_info(self, draft_id: int) -> dict:
         self.draft_id = draft_id
         draft_info = await self.ozon.get_draft_info(draft_id=draft_id)
 
@@ -143,14 +160,16 @@ class OzonSupplier(BaseOperations):
 
     def print_draft_info(self):
         if self.draft_info:
-            print("Информация о черновике:")
+            secho("Информация о черновике:", bold=True)
             for cluster in self.draft_info["clusters"]:
                 state = cluster["warehouses"][0]["availability_status"]["state"]
                 secho(
                     f"{cluster['cluster_name']}: {cluster['macrolocal_cluster_id']} - {state}",
                     color=True,
-                    fg="green" if state == "FULL_AVAILABLE" else "red",
+                    fg="green" if state == "FULL_AVAILABLE" else "yellow",
                 )
+        else:
+            raise OzonSellerError("Информация о черновике отсутствует.")
 
     async def create_supply_by_draft(self):
         selected_clusters = self.draft_info["clusters"]
@@ -186,7 +205,7 @@ class OzonSupplier(BaseOperations):
             logger.warning(f"Выбран склад по умолчанию, {e}")
 
     @cache(ttl="30m", condition=NOT_NONE, key="warehouse")
-    async def get_warehouse(self) -> int:
+    async def populate_warehouse(self) -> int:
         search = Prompt.ask("Введите город для поиска склада", default="димитровград")
         self.warehouses = await self.get_warehouses(search=search)
         return await self.select_warehouse() or self.selected_warehouse_id
@@ -194,15 +213,15 @@ class OzonSupplier(BaseOperations):
     async def run(self, draft_id: int | None = None):
         if not draft_id:
             self.all_clusters = await self.populate_all_clusters()
-            self.selected_warehouse_id = await self.get_warehouse()
+            self.selected_warehouse_id = await self.populate_warehouse()
 
             self.draft_id = await self.create_draft()
             await asyncio.sleep(5)
         else:
             self.draft_id = draft_id
 
-        self.draft_info = await self.get_draft_info(self.draft_id)
-        self.timeslots = await self.get_timeslots()
+        self.draft_info = await self.populate_draft_info(self.draft_id)
+        self.timeslots = await self.populate_timeslots()
         self.selected_timeslot = self.select_timeslot_date()
         await self.create_supply_by_draft()
         self.order_id = await self.get_order_info()
