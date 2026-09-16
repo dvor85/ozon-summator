@@ -1,14 +1,14 @@
 import asyncio
 from pathlib import Path
-from typing import Annotated
 
 from cashews import cache
 from loguru import logger
-from typer import Typer, Argument, Option
+from typer import Typer
 
 from core.config import get_settings
 from ozon_app.ozon_operations import OzonSupplier
 from ozon_app.ozon_seller import OzonApi
+from ozon_app.used_types import ROOT_PATH, FORCE
 
 settings = get_settings()
 
@@ -39,8 +39,5 @@ async def _create(root_path: Path, force: bool = False):
 
 
 @app.command()
-def create(
-    root_path: Annotated[Path, Argument(help="Путь к папке с данными.")],
-    force: Annotated[bool, Option("--force", help="Принудительное создание черновика.")] = False,
-):
+def create(root_path: ROOT_PATH, force: FORCE = False):
     asyncio.run(_create(root_path=root_path, force=force))

@@ -29,6 +29,7 @@ class OzonSupplier(BaseOperations):
         self.selected_timeslot: dict = {}
         self.draft_id: int = 0
         self.order_id: int = 0
+        self.orders: list[dict] = []
         self.draft_info: dict = {}
         self.warehouses: list[dict] = []
         self.selected_warehouse_id: int = settings.ozon.warehouse_id
@@ -37,8 +38,20 @@ class OzonSupplier(BaseOperations):
         self.all_clusters = await cache.get("all_clusters", [])
         self.selected_warehouse_id = await cache.get("warehouse", settings.ozon.warehouse_id)
         self.draft_id = await cache.get("draft_id", 0)
+        self.order_id = await cache.get("order_id", 128811402)
         self.draft_info = await cache.get(f"draft_info:{self.draft_id}", {})
         self.draft_payload = await cache.get("draft_payload", {})
+        self.orders = await cache.get("orders", [])
+
+    @property
+    def cluster_map(self) -> dict:
+        result = {}
+        for cluster in self.all_clusters:
+            if cluster_id := cluster.get("macrolocal_cluster_id"):
+                cluster_data = cluster["data"]
+                cluster_name = cluster_data["macrolocal_cluster"]["name"]
+                result[cluster_id] = cluster_name
+        return result
 
     @cache(ttl="1d", condition=NOT_NONE, key="all_clusters")
     async def populate_all_clusters(self) -> list[dict]:
@@ -51,13 +64,10 @@ class OzonSupplier(BaseOperations):
 
     def build_cargoes_payload(self, supply_ids: list[int]): ...
 
-    @cache(ttl="30m", condition=NOT_NONE, key="draft_payload")
+    @cache(ttl="60m", condition=NOT_NONE, key="draft_payload")
     async def build_draft_payload(self) -> dict[str, Any]:
         clusters_info = defaultdict(list)
         result = {}
-        if not (self.products_fn and self.products_fn.exists()):
-            logger.error(f"Отсутствует файл с товарами {self.products_fn}")
-            raise ValueError(f"Отсутствует файл с товарами {self.products_fn}")
 
         products_df = self.read_product_file()
         products_df["Артикул"] = products_df["Артикул"].str.replace("'", "")
@@ -68,18 +78,27 @@ class OzonSupplier(BaseOperations):
                 template_df = template_df.query("количество > 0")
                 if not template_df.empty:
                     merged_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
+                    offers = merged_df.to_dict(orient="records")
                     city = f.parent.name.lower()
                     logger.info(f"Обработка города {city}...")
                     for cluster in self.all_clusters:
                         if cluster_id := cluster.get("macrolocal_cluster_id"):
                             cluster_data = cluster["data"]
-                            cluster_name = cluster_data["macrolocal_cluster"]["name"].lower()
-                            if city in cluster_name:
+                            cluster_name = cluster_data["macrolocal_cluster"]["name"]
+                            if city in cluster_name.lower():
                                 logger.success(f"Кластер найден {cluster_name}: {cluster_id}")
-                                for offer in merged_df.to_dict(orient="records"):
+                                for offer in offers:
                                     clusters_info[cluster_id].append(
-                                        {"quantity": offer["количество"], "sku": offer["SKU"]}
+                                        {
+                                            "quantity": offer["количество"],
+                                            "offer_id": offer["артикул"],
+                                            "sku": offer["SKU"],
+                                            "barcode": offer["Штрихкод (Серийный номер / EAN)"],
+                                        }
                                     )
+                                break
+                    else:
+                        logger.warning(f"Кластер для города {city} не найден!")
             except Exception as e:
                 logger.warning(e)
 
@@ -105,7 +124,7 @@ class OzonSupplier(BaseOperations):
             await asyncio.sleep(1)
         return results
 
-    @cache(ttl="30m", condition=NOT_NONE, key="draft_id")
+    @cache(ttl="60m", condition=NOT_NONE, key="draft_id")
     async def create_draft(self) -> int:
         """Создать черновик."""
         draft_payload = await self.build_draft_payload()
@@ -132,20 +151,38 @@ class OzonSupplier(BaseOperations):
             for i, ts in enumerate(self.timeslots):
                 print(f"{i}: {ts['date_in_timezone']}")
             try:
-                if timeslot := IntPrompt.ask("Выберите дату (по умолчанию ближайшая)", default=0):
-                    logger.success(f"Выбрана дата {self.timeslots[timeslot]['date_in_timezone']}")
-                    return self.timeslots[timeslot]
+                timeslot = IntPrompt.ask("Выберите дату (по умолчанию ближайшая)", default=0)
+                logger.success(f"Выбрана дата {self.timeslots[timeslot]['date_in_timezone']}")
             except Exception as e:
                 timeslot = 0
                 logger.warning(
                     f"Выбрана ближайшая дата {self.timeslots[timeslot]['date_in_timezone']} по умолчанию, {e}"
                 )
 
-            self.selected_timeslot = self.timeslots[timeslot]
+            return self.timeslots[timeslot]
+        raise OzonSellerError(message="Отсутствуют временные слоты")
+
+    def select_timeslot_time(self, selected_date: dict) -> dict:
+        if selected_date:
+            timeslots = selected_date["timeslots"]
+            for i, ts in enumerate(timeslots):
+                print(f"{i}: {ts['from_in_timezone']} - {ts['to_in_timezone']}")
+            try:
+                timeindex = IntPrompt.ask("Выберите время (по умолчанию последнее)", default=-1)
+                logger.success(
+                    f"Выбрано время {timeslots[timeindex]['from_in_timezone']} - {timeslots[timeindex]['to_in_timezone']}"
+                )
+            except Exception as e:
+                timeindex = -1
+                logger.warning(
+                    f"Выбрано последнее время {timeslots[timeindex]['from_in_timezone']} - {timeslots[timeindex]['to_in_timezone']} по умолчанию, {e}"
+                )
+
+            self.selected_timeslot = timeslots[timeindex]
             return self.selected_timeslot
         raise OzonSellerError(message="Отсутствуют временные слоты")
 
-    @cache(ttl="30m", condition=NOT_NONE, key="draft_info:{draft_id}")
+    @cache(ttl="60m", condition=NOT_NONE, key="draft_info:{draft_id}")
     @retry(attempts=2, wait_initial=5, on=(OzonSellerError,))
     async def populate_draft_info(self, draft_id: int) -> dict:
         self.draft_id = draft_id
@@ -160,7 +197,7 @@ class OzonSupplier(BaseOperations):
 
     def print_draft_info(self):
         if self.draft_info:
-            secho("Информация о черновике:", bold=True)
+            secho(f"Информация о черновике {self.draft_id}:", bold=True)
             for cluster in self.draft_info["clusters"]:
                 state = cluster["warehouses"][0]["availability_status"]["state"]
                 secho(
@@ -183,24 +220,65 @@ class OzonSupplier(BaseOperations):
 
         logger.success(f"Поставка из черновика {self.draft_id} создана")
 
-    async def get_order_info(self) -> int:
-        result = await self.ozon.get_order_info(self.draft_id)
+    @cache(ttl="1d", condition=NOT_NONE, key="order_id")
+    @retry(attempts=2, wait_initial=5, on=(OzonSellerError,))
+    async def get_order_id(self) -> int:
+        result = await self.ozon.get_order_id(self.draft_id)
         if errors := result.get("error_reasons"):
             raise OzonSellerError(message=f"Проблема при создании поставки {self.draft_id}, errors={errors}")
 
+        if result["status"] != "SUCCESS":
+            raise OzonSellerError(
+                message=f"Проблема при получении ID заказа {self.draft_id}, status={result['status']}"
+            )
+
         order_id = result["order_id"]
 
-        logger.success(f"Поставка из черновика {order_id} создана, status={result['status']}")
+        logger.success(f"Поставка {order_id} из черновика {self.draft_id} создана, status={result['status']}")
+        self.order_id = order_id
         return order_id
+
+    @cache(ttl="1d", condition=NOT_NONE, key="orders")
+    async def get_order_info(self) -> list[dict]:
+        result = await self.ozon.get_order_info(self.order_id)
+        self.orders = result["orders"]
+
+        return self.orders
+
+    async def set_cargos(self):
+        cargoes = []
+        orders = self.orders[0]
+        for supply in orders["supplies"]:
+            cluster_id = supply["macrolocal_cluster_id"]
+            for cluster in self.draft_payload["cluster_info"]:
+                value: dict = {"type": "BOX"}
+                items: list[dict] = []
+                if cluster_id == cluster["macrolocal_cluster_id"]:
+                    for item in cluster["items"]:
+                        items.append(
+                            {
+                                "offer_id": item["offer_id"],
+                                "barcode": item["barcode"],
+                                "quantity": item["quantity"],
+                                "quant": 1,
+                            }
+                        )
+                    value["items"] = items
+                    cargoes.append(
+                        {"key": f"{supply['created_date']}", "value": value, "supply_id": supply["supply_id"]}
+                    )
+                    break
+
+        # "supply_id": order["supplies"]["supply_id"]
 
     async def select_warehouse(self) -> int | None:
         for i, wh in enumerate(self.warehouses):
             print(f"{i}: {wh['name']} ({wh['address']})")
 
         try:
-            if warehouse := IntPrompt.ask("Выберите склад", default=0):
-                logger.success(f"Выбран склад {self.warehouses[warehouse]['name']}")
-                return self.warehouses[warehouse]["warehouse_id"]
+            warehouse = IntPrompt.ask("Выберите склад", default=0)
+            logger.success(f"Выбран склад {self.warehouses[warehouse]['name']}")
+            return self.warehouses[warehouse]["warehouse_id"]
         except Exception as e:
             logger.warning(f"Выбран склад по умолчанию, {e}")
 
@@ -208,7 +286,10 @@ class OzonSupplier(BaseOperations):
     async def populate_warehouse(self) -> int:
         search = Prompt.ask("Введите город для поиска склада", default="димитровград")
         self.warehouses = await self.get_warehouses(search=search)
-        return await self.select_warehouse() or self.selected_warehouse_id
+        if selected_warehouse := await self.select_warehouse():
+            self.selected_warehouse_id = selected_warehouse
+
+        return self.selected_warehouse_id
 
     async def run(self, draft_id: int | None = None):
         if not draft_id:
@@ -224,4 +305,4 @@ class OzonSupplier(BaseOperations):
         self.timeslots = await self.populate_timeslots()
         self.selected_timeslot = self.select_timeslot_date()
         await self.create_supply_by_draft()
-        self.order_id = await self.get_order_info()
+        self.order_id = await self.get_order_id()

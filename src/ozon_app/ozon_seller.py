@@ -61,19 +61,27 @@ class OzonApi:
 
         return self._process_response(resp_stock)
 
-    async def get_supply_orders(self) -> dict:
+    async def get_order_id(self, draft_id: int) -> dict:
         data = {"draft_id": draft_id}
         resp_stock = await self.session.post(
-            url="https://api-seller.ozon.ru/v3/supply-order/list",
+            url="https://api-seller.ozon.ru/v2/draft/supply/create/status",
             json=data,
         )
 
         return self._process_response(resp_stock)
 
-    async def get_order_info(self, draft_id: int) -> dict:
-        data = {"draft_id": draft_id}
+    async def get_cargos_set(self, data: dict) -> dict:
         resp_stock = await self.session.post(
-            url="https://api-seller.ozon.ru/v2/draft/supply/create/status",
+            url="https://api-seller.ozon.ru/v1/cargoes/create",
+            json=data,
+        )
+
+        return self._process_response(resp_stock)
+
+    async def get_order_info(self, order_id: int) -> dict:
+        data = {"order_ids": [order_id]}
+        resp_stock = await self.session.post(
+            url="https://api-seller.ozon.ru/v3/supply-order/get",
             json=data,
         )
 
@@ -101,9 +109,8 @@ class OzonApi:
         return self._process_response(resp_stock)
 
     async def supply_create_by_draft(self, selected_clusters: list[dict], draft_id: int, timeslot: dict) -> dict:
-        last_time = timeslot["timeslots"][-1]
-        date_from = last_time["from_in_timezone"]
-        date_to = last_time["to_in_timezone"]
+        date_from = timeslot["from_in_timezone"]
+        date_to = timeslot["to_in_timezone"]
 
         data = {
             "draft_id": draft_id,

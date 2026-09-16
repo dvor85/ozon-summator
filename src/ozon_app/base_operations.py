@@ -12,8 +12,9 @@ warnings.filterwarnings("ignore", message="Workbook contains no default style, a
 class BaseOperations:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.package_units = self.path / "Грузоместа.xlsx"
+        self.cargos_fn = self.path / "Грузоместа.xlsx"
         self.template_fn = "Шаблон поставки товаров.xlsx"
+        self.cargos_template_fn = "import-package-units-template*.xlsx"
 
     @property
     def template_columns(self) -> dict[str, str]:
@@ -32,6 +33,15 @@ class BaseOperations:
         }
 
     @property
+    def package_columns(self) -> dict[str, str]:
+        return {
+            "ШК товара": "string",
+            "Артикул товара": "string",
+            "Кол-во товаров": "Int64",
+            "ШК ГМ": "string",
+        }
+
+    @property
     def products_fn(self) -> Path | None:
         for f in self.path.glob("Товары*.xlsx"):
             return f
@@ -39,6 +49,9 @@ class BaseOperations:
 
     def read_template_file(self, filename: Path) -> pd.DataFrame:
         try:
+            if not (filename and filename.exists()):
+                err = f"Отсутствует файл шаблона поставки '{filename}'"
+                raise ValueError(err)
             df = pd.read_excel(filename).astype(self.template_columns)
             return df[list(self.template_columns)]
         except Exception as e:
@@ -46,10 +59,24 @@ class BaseOperations:
             raise
 
     def read_product_file(self) -> pd.DataFrame:
+        filename = self.products_fn
         try:
-            filename = self.products_fn
+            if not (filename and filename.exists()):
+                err = f"Отсутствует файл с товарами '{self.products_fn}'"
+                raise ValueError(err)
             df = pd.read_excel(filename, skiprows=1).astype(self.product_columns)
             return df[list(self.product_columns)]
+        except Exception as e:
+            logger.error(f"Ошибка чтения файла {filename}: {e}")
+            raise
+
+    def read_package_file(self, filename: Path) -> pd.DataFrame:
+        try:
+            if not (filename and filename.exists()):
+                err = f"Отсутствует файл '{filename}'"
+                raise ValueError(err)
+            df = pd.read_excel(filename).astype(self.package_columns)
+            return df[list(self.package_columns)]
         except Exception as e:
             logger.error(f"Ошибка чтения файла {filename}: {e}")
             raise
