@@ -40,4 +40,5 @@ async def _create(root_path: Path, force: bool = False):
 
 @app.command()
 def create(root_path: ROOT_PATH, force: FORCE = False):
+    """Создать черновик поставки"""
     asyncio.run(_create(root_path=root_path, force=force))
