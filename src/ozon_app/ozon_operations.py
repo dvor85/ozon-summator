@@ -38,7 +38,7 @@ class OzonSupplier(BaseOperations):
         self.all_clusters = await cache.get("all_clusters", [])
         self.selected_warehouse_id = await cache.get("warehouse", settings.ozon.warehouse_id)
         self.draft_id = await cache.get("draft_id", 0)
-        self.order_id = await cache.get("order_id", 128811402)
+        self.order_id = await cache.get("order_id", 0)
         self.draft_info = await cache.get(f"draft_info:{self.draft_id}", {})
         self.draft_payload = await cache.get("draft_payload", {})
         self.orders = await cache.get("orders", [])
