@@ -9,7 +9,7 @@ from typer import Typer
 
 from core.config import get_settings
 from ozon_app import draft, supply, report
-from ozon_app.base_operations import BaseOperations
+from ozon_app.base_operations import ExcelOperations
 from ozon_app.ozon_operations import OzonSupplier
 from ozon_app.ozon_seller import OzonApi
 from ozon_app.used_types import ROOT_PATH
@@ -17,13 +17,13 @@ from ozon_app.used_types import ROOT_PATH
 settings = get_settings()
 
 
-app = Typer()
-app.add_typer(draft.app, name="draft")
-app.add_typer(supply.app, name="supply")
-app.add_typer(report.app, name="report")
+app = Typer(help="Для операций с ozon требуются переменные окружения OZON_CLIENT_ID и OZON_API_KEY")
+app.add_typer(draft.app, name="draft", help="Операции с черновиком поставки")
+app.add_typer(supply.app, name="supply", help="Операции с заявкой")
+app.add_typer(report.app, name="report", help="Отчеты")
 
 
-class TemplateGenerator(BaseOperations):
+class TemplateGenerator(ExcelOperations):
     def run(self) -> None:
         logger.info(f"Генерация файла '{self.template_fn}'")
 
@@ -31,16 +31,12 @@ class TemplateGenerator(BaseOperations):
         df["Артикул"] = df["Артикул"].str.replace("'", "")
         df["количество"] = 0
         df = df.rename(columns={"Артикул": "артикул", "Название товара": "имя (необязательно)"}).astype(
-            {
-                "артикул": "string",
-                "имя (необязательно)": "string",
-                "количество": "Int64",
-            }
+            self.template_columns
         )
         self.to_excel_with_format(df, self.path / self.template_fn, "Товарный состав", index=False)
 
 
-class PackageCollector(BaseOperations):
+class PackageCollector(ExcelOperations):
     def get_items_in_clusters(self, all_clusters: list[dict]) -> list[dict]:
         result = []
 
@@ -106,7 +102,6 @@ class PackageCollector(BaseOperations):
 
 
 async def _rename(root_path: Path):
-    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
     async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
         supplier = OzonSupplier(root_path, ozon_api=ozon)
@@ -114,9 +109,13 @@ async def _rename(root_path: Path):
 
         template_fn = root_path / supplier.template_fn
         df = pd.read_excel(template_fn).convert_dtypes()
-        payload = []
-        for row in df.itertuples():
-            payload.append({"offer_id": row[2], "new_offer_id": f"{row[1]}_{row[2]}"})
+        payload = [
+            {
+                "offer_id": row[1],
+                "new_offer_id": f"{row[0]}_{row[1]}",
+            }
+            for row in df.itertuples(index=False)
+        ]
 
         res = await supplier.rename_articles(payload)
         errors = list(chain(r["errors"] for r in res))
@@ -126,12 +125,14 @@ async def _rename(root_path: Path):
 @app.command()
 def rename(root_path: ROOT_PATH):
     """Переименование артикулов"""
+    root_path = Path(root_path).absolute()
     asyncio.run(_rename(root_path))
 
 
 @app.command()
 def template(root_path: ROOT_PATH):
-    """Генерировать шаблон"""
+    """Генерировать шаблон поставки товаров"""
+    root_path = Path(root_path).absolute()
     collector = TemplateGenerator(root_path)
     collector.run()
 
@@ -139,6 +140,7 @@ def template(root_path: ROOT_PATH):
 @app.command()
 def cargos(root_path: ROOT_PATH):
     """Заполнение грузомест в эксель файлах import-package-units-template*.xlsx"""
+    root_path = Path(root_path).absolute()
     collector = PackageCollector(root_path)
     collector.run()
 

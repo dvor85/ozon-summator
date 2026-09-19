@@ -89,7 +89,7 @@ class OzonApi:
 
     async def get_timeslots(self, selected_clusters: list[dict], draft_id: int) -> dict:
         date_from = datetime.date.today()
-        date_to = date_from + datetime.timedelta(days=7)
+        date_to = date_from + datetime.timedelta(days=14)
 
         data = {
             "date_from": f"{date_from:%Y-%m-%d}",

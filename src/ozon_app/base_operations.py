@@ -9,7 +9,7 @@ from openpyxl.styles import Alignment
 warnings.filterwarnings("ignore", message="Workbook contains no default style, apply openpyxl's default")
 
 
-class BaseOperations:
+class ExcelOperations:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.cargos_fn = self.path / "Грузоместа.xlsx"

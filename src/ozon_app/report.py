@@ -1,3 +1,4 @@
+from enum import StrEnum
 from pathlib import Path
 from typing import Generator
 
@@ -6,7 +7,7 @@ from loguru import logger
 from typer import Typer
 
 from core.config import get_settings
-from ozon_app.base_operations import BaseOperations
+from ozon_app.base_operations import ExcelOperations
 from ozon_app.used_types import ROOT_PATH
 
 settings = get_settings()
@@ -15,34 +16,29 @@ settings = get_settings()
 app = Typer()
 
 
-class Summator(BaseOperations):
-    def __init__(self, path: Path, template: str):
+class ReportType(StrEnum):
+    PLAN = "план"
+    FACT = "факт"
+
+
+class Summator(ExcelOperations):
+    def __init__(self, path: Path, rep_type: ReportType):
         super().__init__(path)
-        self.template = template
-        self.type = "факт" if "import-package-units-template" in self.template else "план"
+        self.type = rep_type
+        self.template = "*.".join(self.template_fn.rsplit(".", 2))
+        if self.type == ReportType.FACT:
+            self.template = self.cargos_template_fn
 
     @property
     def columns(self) -> dict[str, str]:
-        if self.type == "факт":
-            return {
-                "ШК товара": "string",
-                "Артикул товара": "string",
-                "Кол-во товаров": "Int64",
-            }
-        else:
-            return {
-                "артикул": "string",
-                "имя (необязательно)": "string",
-                "количество": "Int64",
-            }
+        if self.type == ReportType.FACT:
+            return self.package_columns
+        return self.template_columns
 
     def read_file(self, filename: Path) -> pd.DataFrame:
-        try:
-            df = pd.read_excel(filename).astype(self.columns)
-            return df[list(self.columns)]
-        except Exception as e:
-            logger.error(f"Ошибка чтения файла {filename}: {e}")
-            raise
+        if self.type == ReportType.FACT:
+            return self.read_package_file(filename)
+        return self.read_template_file(filename)
 
     def read_dir(self) -> Generator[pd.DataFrame]:
         for f in self.path.rglob(self.template):
@@ -53,10 +49,11 @@ class Summator(BaseOperations):
         gen_file = self.path / f"Итог {self.type}.xlsx"
         try:
             sum_col = [k for k, v in self.columns.items() if v == "Int64"][0]
+            group_cols = [col for col in self.columns if "артикул" in col.lower()]
             result = (
                 pd.concat(dfs, ignore_index=True)
                 .groupby(
-                    [k for k, v in self.columns.items() if v == "string"],
+                    group_cols,
                     as_index=False,
                     sort=False,
                 )[sum_col]
@@ -69,7 +66,7 @@ class Summator(BaseOperations):
             logger.warning(f"Нет файлов сооветствующих шаблону '{self.template}': {e}")
 
 
-class PrintPakages(BaseOperations):
+class PrintPakages(ExcelOperations):
     def run(self) -> None:
         try:
             with pd.ExcelWriter(self.cargos_fn) as writer:
@@ -104,22 +101,25 @@ class PrintPakages(BaseOperations):
 @app.command()
 def plan(root_path: ROOT_PATH):
     """Суммарный отчет поставки по плану"""
+    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
-    summator = Summator(root_path, "Шаблон поставки товаров*.xlsx")
+    summator = Summator(root_path, ReportType.PLAN)
     summator.run()
 
 
 @app.command()
 def fact(root_path: ROOT_PATH):
     """Суммарный отчет поставки по факту"""
+    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
-    summator = Summator(root_path, "import-package-units-template*.xlsx")
+    summator = Summator(root_path, ReportType.FACT)
     summator.run()
 
 
 @app.command()
 def cargos(root_path: ROOT_PATH):
     """Суммарный отчет по грузоместам"""
+    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
     pp = PrintPakages(root_path)
     pp.run()

@@ -6,19 +6,18 @@ from typing import Any
 
 from cashews import NOT_NONE, cache
 from loguru import logger
-from rich import print
 from rich.prompt import IntPrompt, Prompt
 from stamina import retry
 from typer import secho
 
 from core.config import get_settings
-from ozon_app.base_operations import BaseOperations
+from ozon_app.base_operations import ExcelOperations
 from ozon_app.ozon_seller import OzonApi, OzonSellerError
 
 settings = get_settings()
 
 
-class OzonSupplier(BaseOperations):
+class OzonSupplier(ExcelOperations):
     def __init__(self, path: Path, ozon_api: OzonApi):
         super().__init__(path)
         self.ozon = ozon_api
@@ -53,18 +52,18 @@ class OzonSupplier(BaseOperations):
                 result[cluster_id] = cluster_name
         return result
 
-    @cache(ttl="1d", condition=NOT_NONE, key="all_clusters")
+    @cache(ttl="3d", condition=NOT_NONE, key="all_clusters")
     async def populate_all_clusters(self) -> list[dict]:
         self.all_clusters = (await self.ozon.get_clusters()).get("result", [])
         return self.all_clusters
 
-    @cache(ttl="1d", condition=NOT_NONE, key="warehouses:{search}")
+    @cache(ttl="3d", condition=NOT_NONE, key="warehouses:{search}")
     async def get_warehouses(self, search: str) -> list[dict]:
         return (await self.ozon.get_dbo_warehouses(search=search)).get("search", [])
 
     def build_cargoes_payload(self, supply_ids: list[int]): ...
 
-    @cache(ttl="60m", condition=NOT_NONE, key="draft_payload")
+    @cache(ttl="3d", condition=NOT_NONE, key="draft_payload")
     async def build_draft_payload(self) -> dict[str, Any]:
         clusters_info = defaultdict(list)
         result = {}
@@ -124,7 +123,7 @@ class OzonSupplier(BaseOperations):
             await asyncio.sleep(1)
         return results
 
-    @cache(ttl="60m", condition=NOT_NONE, key="draft_id")
+    @cache(ttl="3d", condition=NOT_NONE, key="draft_id")
     async def create_draft(self) -> int:
         """Создать черновик."""
         draft_payload = await self.build_draft_payload()
@@ -149,14 +148,16 @@ class OzonSupplier(BaseOperations):
     def select_timeslot_date(self) -> dict:
         if self.timeslots:
             for i, ts in enumerate(self.timeslots):
-                print(f"{i}: {ts['date_in_timezone']}")
+                secho(f"{i}: {ts['date_in_timezone']}", color=True, fg="cyan")
             try:
                 timeslot = IntPrompt.ask("Выберите дату (по умолчанию ближайшая)", default=0)
-                logger.success(f"Выбрана дата {self.timeslots[timeslot]['date_in_timezone']}")
+                secho(f"Выбрана дата {self.timeslots[timeslot]['date_in_timezone']}", color=True, fg="green")
             except Exception as e:
                 timeslot = 0
-                logger.warning(
-                    f"Выбрана ближайшая дата {self.timeslots[timeslot]['date_in_timezone']} по умолчанию, {e}"
+                secho(
+                    f"Выбрана ближайшая дата {self.timeslots[timeslot]['date_in_timezone']} по умолчанию, {e}",
+                    color=True,
+                    fg="yellow",
                 )
 
             return self.timeslots[timeslot]
@@ -166,31 +167,34 @@ class OzonSupplier(BaseOperations):
         if selected_date:
             timeslots = selected_date["timeslots"]
             for i, ts in enumerate(timeslots):
-                print(f"{i}: {ts['from_in_timezone']} - {ts['to_in_timezone']}")
+                secho(f"{i}: {ts['from_in_timezone']} - {ts['to_in_timezone']}", color=True, fg="cyan")
             try:
                 timeindex = IntPrompt.ask("Выберите время (по умолчанию последнее)", default=-1)
-                logger.success(
-                    f"Выбрано время {timeslots[timeindex]['from_in_timezone']} - {timeslots[timeindex]['to_in_timezone']}"
+                secho(
+                    f"Выбрано время {timeslots[timeindex]['from_in_timezone']} - {timeslots[timeindex]['to_in_timezone']}",
+                    color=True,
+                    fg="green",
                 )
             except Exception as e:
                 timeindex = -1
-                logger.warning(
-                    f"Выбрано последнее время {timeslots[timeindex]['from_in_timezone']} - {timeslots[timeindex]['to_in_timezone']} по умолчанию, {e}"
+                secho(
+                    f"Выбрано последнее время {timeslots[timeindex]['from_in_timezone']} - {timeslots[timeindex]['to_in_timezone']} по умолчанию, {e}",
+                    color=True,
+                    fg="yellow",
                 )
 
             self.selected_timeslot = timeslots[timeindex]
             return self.selected_timeslot
         raise OzonSellerError(message="Отсутствуют временные слоты")
 
-    @cache(ttl="60m", condition=NOT_NONE, key="draft_info:{draft_id}")
+    @cache(ttl="3d", condition=NOT_NONE, key="draft_info")
     @retry(attempts=2, wait_initial=5, on=(OzonSellerError,))
-    async def populate_draft_info(self, draft_id: int) -> dict:
-        self.draft_id = draft_id
-        draft_info = await self.ozon.get_draft_info(draft_id=draft_id)
+    async def populate_draft_info(self) -> dict:
+        draft_info = await self.ozon.get_draft_info(draft_id=self.draft_id)
 
         if draft_info["status"] != "SUCCESS":
             raise OzonSellerError(
-                message=f"Проблема с черновиком {draft_id}, status={draft_info['status']} errors={draft_info['errors']}"
+                message=f"Проблема с черновиком {self.draft_id}, status={draft_info['status']} errors={draft_info['errors']}"
             )
         self.draft_info = draft_info
         return draft_info
@@ -273,14 +277,14 @@ class OzonSupplier(BaseOperations):
 
     async def select_warehouse(self) -> int | None:
         for i, wh in enumerate(self.warehouses):
-            print(f"{i}: {wh['name']} ({wh['address']})")
+            secho(f"{i}: {wh['name']} ({wh['address']})", color=True, fg="cyan")
 
         try:
             warehouse = IntPrompt.ask("Выберите склад", default=0)
-            logger.success(f"Выбран склад {self.warehouses[warehouse]['name']}")
+            secho(f"Выбран склад {self.warehouses[warehouse]['name']}", color=True, fg="green")
             return self.warehouses[warehouse]["warehouse_id"]
         except Exception as e:
-            logger.warning(f"Выбран склад по умолчанию, {e}")
+            secho(f"Выбран склад по умолчанию, {e}", color=True, fg="yellow")
 
     @cache(ttl="30m", condition=NOT_NONE, key="warehouse")
     async def populate_warehouse(self) -> int:
@@ -301,7 +305,7 @@ class OzonSupplier(BaseOperations):
         else:
             self.draft_id = draft_id
 
-        self.draft_info = await self.populate_draft_info(self.draft_id)
+        self.draft_info = await self.populate_draft_info()
         self.timeslots = await self.populate_timeslots()
         self.selected_timeslot = self.select_timeslot_date()
         await self.create_supply_by_draft()

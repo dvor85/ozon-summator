@@ -17,7 +17,6 @@ app = Typer()
 
 
 async def _create(root_path: Path, force: bool = False):
-    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
     if force:
         await cache.clear()
@@ -56,7 +55,6 @@ async def _create(root_path: Path, force: bool = False):
 
 
 async def _order_info(root_path: Path, force: bool = False):
-    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
     if force:
         await cache.clear()
@@ -74,12 +72,14 @@ async def _order_info(root_path: Path, force: bool = False):
 @app.command()
 def create(root_path: ROOT_PATH, force: FORCE = False):
     """Создать поставку по черновику из кэша"""
+    root_path = Path(root_path).absolute()
     asyncio.run(_create(root_path=root_path, force=force))
 
 
 @app.command()
 def order_info(root_path: ROOT_PATH, force: FORCE = False):
     """Получить информацию о поставке по кэшу"""
+    root_path = Path(root_path).absolute()
     asyncio.run(_order_info(root_path=root_path, force=force))
 
 

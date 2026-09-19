@@ -17,7 +17,6 @@ app = Typer()
 
 
 async def _create(root_path: Path, force: bool = False):
-    root_path = Path(root_path).absolute()
     logger.info(f"Рабочая директория: {root_path}")
     if force:
         await cache.clear()
@@ -32,13 +31,14 @@ async def _create(root_path: Path, force: bool = False):
             await supplier.populate_all_clusters()
             await supplier.populate_warehouse()
             draft_id = await supplier.create_draft()
-            logger.info(f"Создан новый черновик: {draft_id}")
+            logger.success(f"Создан новый черновик: {draft_id}")
 
-        await supplier.populate_draft_info(draft_id)
+        await supplier.populate_draft_info()
         supplier.print_draft_info()
 
 
 @app.command()
 def create(root_path: ROOT_PATH, force: FORCE = False):
     """Создать черновик поставки"""
+    root_path = Path(root_path).absolute()
     asyncio.run(_create(root_path=root_path, force=force))
