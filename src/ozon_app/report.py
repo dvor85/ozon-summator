@@ -65,6 +65,39 @@ class Summator(ExcelOperations):
         except Exception as e:
             logger.warning(f"Нет файлов сооветствующих шаблону '{self.template}': {e}")
 
+    def by_clusters(self) -> None:
+        gen_file = self.path / f"Итог {self.type} по кластерам.xlsx"
+        sum_col = [k for k, v in self.columns.items() if v == "Int64"][0]
+        try:
+            with pd.ExcelWriter(gen_file) as writer:
+                startrow = 0
+                for f in self.path.rglob(self.template_fn):
+                    city = f.parent.name.capitalize()
+                    try:
+                        df = self.read_template_file(f).query(f"`{sum_col}` > 0")
+                        if not df.empty:
+                            # Пишем строку-разделитель (займёт всю ширину таблицы)
+                            sep_row = pd.DataFrame([[city] + [""] * (len(df.columns) - 1)])
+                            sep_row.to_excel(
+                                writer,
+                                sheet_name="Сводная",
+                                startrow=startrow,
+                                header=False,
+                                index=False,
+                            )
+                            startrow += 1
+
+                            df.to_excel(writer, index=False, startrow=startrow, sheet_name="Сводная")
+                            startrow += len(df) + 1
+                            worksheet = writer.sheets["Сводная"]
+                            self.format(worksheet, df)
+                    except Exception as e:
+                        logger.warning(f"Ошибка при обработке города {city}: {e}")
+            logger.success(f"{gen_file} успешно создан")
+        except Exception as e:
+            logger.warning(f"Нет файлов сооветствующих шаблону '{self.template_fn}': {e}")
+            self.cargos_fn.unlink(missing_ok=True)
+
 
 class PrintPakages(ExcelOperations):
     def run(self) -> None:
@@ -105,6 +138,7 @@ def plan(root_path: ROOT_PATH):
     logger.info(f"Рабочая директория: {root_path}")
     summator = Summator(root_path, ReportType.PLAN)
     summator.run()
+    summator.by_clusters()
 
 
 @app.command()
