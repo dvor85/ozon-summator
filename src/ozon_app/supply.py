@@ -3,11 +3,11 @@ from pathlib import Path
 
 from cashews import cache
 from loguru import logger
-from typer import Typer, Abort
+from typer import Typer, Abort, secho
 
 from core.config import get_settings
 from ozon_app.ozon_operations import OzonSupplier
-from ozon_app.ozon_seller import OzonApi
+from ozon_app.ozon_seller import OzonApi, OzonSellerError
 from ozon_app.used_types import ROOT_PATH, FORCE
 
 settings = get_settings()
@@ -22,19 +22,24 @@ async def _create(root_path: Path, force: bool = False):
         await cache.clear()
 
     async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
-        supplier = OzonSupplier(root_path, ozon_api=ozon)
-        await supplier.initialize()
-        if supplier.draft_id:
-            supplier.print_draft_info()
-            await supplier.populate_timeslots()
-            selected_date = supplier.select_timeslot_date()
-            await asyncio.sleep(0)
-            supplier.select_timeslot_time(selected_date=selected_date)
-            await supplier.create_supply_by_draft()
-            await supplier.get_order_id()
-            await supplier.get_order_info()
+        try:
+            supplier = OzonSupplier(root_path, ozon_api=ozon)
+            await supplier.initialize()
+            if supplier.draft_id:
+                supplier.print_draft_info()
+                await supplier.populate_timeslots()
+                selected_date = supplier.select_timeslot_date()
+                await asyncio.sleep(0)
+                supplier.select_timeslot_time(selected_date=selected_date)
+                await supplier.create_supply_by_draft()
+                await supplier.get_order_id()
+                await supplier.get_order_info()
+        except OzonSellerError as e:
+            secho(e.message, color=True, bg="red")
+            raise Abort from None
 
-        Abort("Черновик не найден, сначала создайте черновик!")
+        secho("Черновик не найден, сначала создайте черновик!", color=True, bg="red")
+        raise Abort
 
 
 # async def _cargos(root_path: Path, force: bool = False):
@@ -60,13 +65,18 @@ async def _order_info(root_path: Path, force: bool = False):
         await cache.clear()
 
     async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
-        supplier = OzonSupplier(root_path, ozon_api=ozon)
-        await supplier.initialize()
-        if supplier.draft_id:
-            supplier.print_draft_info()
-            await supplier.get_order_id()
+        try:
+            supplier = OzonSupplier(root_path, ozon_api=ozon)
+            await supplier.initialize()
+            if supplier.draft_id:
+                supplier.print_draft_info()
+                await supplier.get_order_id()
+        except OzonSellerError as e:
+            secho(e.message, color=True, bg="red")
+            raise Abort from None
 
-        Abort("Черновик не найден, сначала создайте черновик!")
+        secho("Черновик не найден, сначала создайте черновик!", color=True, bg="red")
+        raise Abort
 
 
 @app.command()

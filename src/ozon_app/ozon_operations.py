@@ -38,7 +38,7 @@ class OzonSupplier(ExcelOperations):
         self.selected_warehouse_id = await cache.get("warehouse", settings.ozon.warehouse_id)
         self.draft_id = await cache.get("draft_id", 0)
         self.order_id = await cache.get("order_id", 0)
-        self.draft_info = await cache.get(f"draft_info:{self.draft_id}", {})
+        self.draft_info = await cache.get("draft_info", {})
         self.draft_payload = await cache.get("draft_payload", {})
         self.orders = await cache.get("orders", [])
 
@@ -133,7 +133,8 @@ class OzonSupplier(ExcelOperations):
                 raise OzonSellerError(message=f"Ошибка при создании черновика: {errors}", code=draft_res.get("code"))
 
             logger.info(f"draft_id={draft_res.get('draft_id')}")
-            return draft_res["draft_id"]
+            self.draft_id = draft_res["draft_id"]
+            return self.draft_id
         raise OzonSellerError(message="Не заполнены кластеры для черновика")
 
     async def populate_timeslots(self) -> list[dict]:
