@@ -3,8 +3,7 @@ from pathlib import Path
 from typing import Generator
 
 import pandas as pd
-from loguru import logger
-from typer import Typer
+from typer import Typer, secho
 
 from core.config import get_settings
 from ozon_app.base_operations import ExcelOperations
@@ -61,9 +60,9 @@ class Summator(ExcelOperations):
             ).query(f"`{sum_col}` > 0")
             result = result.sort_values(by=sum_col, ascending=False)
             self.to_excel_with_format(result, gen_file, "Сводная")
-            logger.success(f"{gen_file} успешно создан")
+            secho(f"{gen_file} успешно создан", fg="green", color=True)
         except Exception as e:
-            logger.warning(f"Нет файлов сооветствующих шаблону '{self.template}': {e}")
+            secho(f"Нет файлов сооветствующих шаблону '{self.template}': {e}", fg="yellow", color=True)
 
     def by_clusters(self) -> None:
         gen_file = self.path / f"Итог {self.type} по кластерам.xlsx"
@@ -92,10 +91,10 @@ class Summator(ExcelOperations):
                             worksheet = writer.sheets["Сводная"]
                             self.format(worksheet, df)
                     except Exception as e:
-                        logger.warning(f"Ошибка при обработке города {city}: {e}")
-            logger.success(f"{gen_file} успешно создан")
+                        secho(f"Ошибка при обработке города {city}: {e}", fg="red", color=True)
+            secho(f"{gen_file} успешно создан", fg="green", color=True)
         except Exception as e:
-            logger.warning(f"Нет файлов сооветствующих шаблону '{self.template_fn}': {e}")
+            secho(f"Нет файлов сооветствующих шаблону '{self.template_fn}': {e}", fg="yellow", color=True)
             self.cargos_fn.unlink(missing_ok=True)
 
 
@@ -124,10 +123,10 @@ class PrintPakages(ExcelOperations):
                         worksheet = writer.sheets["Сводная"]
                         self.format(worksheet, df)
                     except Exception as e:
-                        logger.warning(f"Ошибка при обработке города {city}: {e}")
-            logger.success(f"{self.cargos_fn} успешно создан")
+                        secho(f"Ошибка при обработке города {city}: {e}", fg="red", color=True)
+            secho(f"{self.cargos_fn} успешно создан", fg="green", color=True)
         except Exception as e:
-            logger.warning(f"Нет файлов сооветствующих шаблону '{self.cargos_template_fn}': {e}")
+            secho(f"Нет файлов сооветствующих шаблону '{self.cargos_template_fn}': {e}", fg="yellow", color=True)
             self.cargos_fn.unlink(missing_ok=True)
 
 
@@ -135,7 +134,6 @@ class PrintPakages(ExcelOperations):
 def plan(root_path: ROOT_PATH):
     """Суммарный отчет поставки по плану"""
     root_path = Path(root_path).absolute()
-    logger.info(f"Рабочая директория: {root_path}")
     summator = Summator(root_path, ReportType.PLAN)
     summator.run()
     summator.by_clusters()
@@ -145,7 +143,6 @@ def plan(root_path: ROOT_PATH):
 def fact(root_path: ROOT_PATH):
     """Суммарный отчет поставки по факту"""
     root_path = Path(root_path).absolute()
-    logger.info(f"Рабочая директория: {root_path}")
     summator = Summator(root_path, ReportType.FACT)
     summator.run()
 
@@ -154,6 +151,5 @@ def fact(root_path: ROOT_PATH):
 def cargos(root_path: ROOT_PATH):
     """Суммарный отчет по грузоместам"""
     root_path = Path(root_path).absolute()
-    logger.info(f"Рабочая директория: {root_path}")
     pp = PrintPakages(root_path)
     pp.run()

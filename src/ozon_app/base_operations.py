@@ -1,10 +1,12 @@
 import string
 import warnings
-from asyncio.log import logger
 from pathlib import Path
 
 import pandas as pd
 from openpyxl.styles import Alignment
+from typer import secho
+
+from core.constants import CACHE_DIR
 
 warnings.filterwarnings("ignore", message="Workbook contains no default style, apply openpyxl's default")
 
@@ -15,6 +17,11 @@ class ExcelOperations:
         self.cargos_fn = self.path / "Грузоместа.xlsx"
         self.template_fn = "Шаблон поставки товаров.xlsx"
         self.cargos_template_fn = "import-package-units-template*.xlsx"
+        self._print_info()
+
+    def _print_info(self):
+        secho(f"Рабочая директория: {self.path}", color=True, bold=True, fg="cyan")
+        secho(f"Каталог кэша: {CACHE_DIR}", color=True, bold=True, fg="cyan")
 
     @property
     def template_columns(self) -> dict[str, str]:
@@ -55,7 +62,7 @@ class ExcelOperations:
             df = pd.read_excel(filename).astype(self.template_columns)
             return df[list(self.template_columns)]
         except Exception as e:
-            logger.error(f"Ошибка чтения файла {filename}: {e}")
+            secho(f"Ошибка чтения файла {filename}: {e}", color=True, fg="red")
             raise
 
     def read_product_file(self) -> pd.DataFrame:
@@ -67,7 +74,7 @@ class ExcelOperations:
             df = pd.read_excel(filename, skiprows=1).astype(self.product_columns)
             return df[list(self.product_columns)]
         except Exception as e:
-            logger.error(f"Ошибка чтения файла {filename}: {e}")
+            secho(f"Ошибка чтения файла {filename}: {e}", color=True, fg="red")
             raise
 
     def read_package_file(self, filename: Path) -> pd.DataFrame:
@@ -78,7 +85,7 @@ class ExcelOperations:
             df = pd.read_excel(filename).astype(self.package_columns)
             return df[list(self.package_columns)]
         except Exception as e:
-            logger.error(f"Ошибка чтения файла {filename}: {e}")
+            secho(f"Ошибка чтения файла {filename}: {e}", color=True, fg="red")
             raise
 
     def to_excel_with_format(self, df: pd.DataFrame, fn: Path, sheet_name: str, index: bool = False) -> None:

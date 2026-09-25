@@ -28,7 +28,7 @@ class OzonApi:
     def _process_response(res: httpx.Response) -> dict:
         jdata = res.json()
         if res.status_code != 200:
-            raise Exception(f"Error {jdata.get('code')}: {jdata.get('message')}")
+            raise OzonSellerError(message=jdata.get("message"), code=jdata.get("code"))
         return jdata
 
     async def get_clusters(self):
@@ -89,7 +89,7 @@ class OzonApi:
 
     async def get_timeslots(self, selected_clusters: list[dict], draft_id: int) -> dict:
         date_from = datetime.date.today()
-        date_to = date_from + datetime.timedelta(days=7)
+        date_to = date_from + datetime.timedelta(days=27)
 
         data = {
             "date_from": f"{date_from:%Y-%m-%d}",

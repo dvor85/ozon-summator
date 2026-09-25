@@ -3,9 +3,8 @@ from itertools import chain
 from pathlib import Path
 
 import pandas as pd
-from loguru import logger
 from rich import print
-from typer import Typer
+from typer import Typer, secho
 
 from core.config import get_settings
 from ozon_app import draft, supply, report
@@ -25,7 +24,7 @@ app.add_typer(report.app, name="report", help="Отчеты")
 
 class TemplateGenerator(ExcelOperations):
     def run(self) -> None:
-        logger.info(f"Генерация файла '{self.template_fn}'")
+        secho(f"Генерация файла '{self.template_fn}'", color=True, fg="cyan")
 
         df = self.read_product_file()
         df["Артикул"] = df["Артикул"].str.replace("'", "")
@@ -51,13 +50,13 @@ class PackageCollector(ExcelOperations):
                     merged_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
                     offers = merged_df.to_dict(orient="records")
                     city = f.parent.name.lower()
-                    logger.info(f"Обработка города {city}...")
+                    secho(f"Обработка города {city}...")
                     for cluster in all_clusters:
                         if cluster_id := cluster.get("macrolocal_cluster_id"):
                             cluster_data = cluster["data"]
                             cluster_name = cluster_data["macrolocal_cluster"]["name"]
                             if city in cluster_name.lower():
-                                logger.success(f"Кластер найден {cluster_name}: {cluster_id}")
+                                secho(f"Кластер найден {cluster_name}: {cluster_id}", color=True, fg="green")
                                 items = [
                                     {
                                         "quantity": offer["количество"],
@@ -70,9 +69,9 @@ class PackageCollector(ExcelOperations):
                                 result.append({"cluster_id": cluster_id, "cluster_name": cluster_name, "items": items})
                                 break
                     else:
-                        logger.warning(f"Кластер для города {city} не найден!")
+                        secho(f"Кластер для города {city} не найден!", color=True, fg="yellow")
             except Exception as e:
-                logger.warning(e)
+                secho(f"Ошибка при обработке города {city}: {e}", color=True, fg="red")
 
         return result
 
@@ -82,7 +81,7 @@ class PackageCollector(ExcelOperations):
 
         for f in self.path.rglob(self.cargos_template_fn):
             city = f.parent.name.capitalize()
-            logger.info(f"Обработка города {city}...")
+            secho(f"Обработка города {city}...", color=True, fg="cyan")
             df = pd.read_excel(f).astype(self.package_columns)
             if df["Артикул товара"].isna().any():
                 template_file = f.parent / self.template_fn
@@ -96,13 +95,12 @@ class PackageCollector(ExcelOperations):
                     df = df.astype(self.package_columns)
                     self.to_excel_with_format(df, f, "Состав ГМ поставки")
                 else:
-                    logger.error(f"Отсутствует файл {template_file}")
+                    secho(f"Отсутствует файл {template_file}", color=True, fg="red")
             else:
-                logger.warning(f"Файл {f} уже содержит данные, пропускаем...")
+                secho(f"Файл {f} уже содержит данные, пропускаем...", color=True, fg="yellow")
 
 
 async def _rename(root_path: Path):
-    logger.info(f"Рабочая директория: {root_path}")
     async with OzonApi(client_id=settings.ozon.client_id, api_key=settings.ozon.api_key) as ozon:
         supplier = OzonSupplier(root_path, ozon_api=ozon)
         await supplier.initialize()
@@ -143,6 +141,12 @@ def cargos(root_path: ROOT_PATH):
     root_path = Path(root_path).absolute()
     collector = PackageCollector(root_path)
     collector.run()
+
+
+# @app.callback(invoke_without_command=True)
+# def print_info(root_path: ROOT_PATH):
+#     root_path = Path(root_path).absolute()
+#     secho(f"Рабочая директория: {root_path}", color=True, fg="cyan")
 
 
 # async def _main(root_path: Path, draft_id: int | None = None):

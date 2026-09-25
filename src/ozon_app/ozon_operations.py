@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from cashews import NOT_NONE, cache
-from loguru import logger
 from rich.prompt import IntPrompt, Prompt
 from stamina import retry
 from typer import secho
@@ -32,6 +31,7 @@ class OzonSupplier(ExcelOperations):
         self.draft_info: dict = {}
         self.warehouses: list[dict] = []
         self.selected_warehouse_id: int = settings.ozon.warehouse_id
+        self.warehouse_title: str = ""
 
     async def initialize(self):
         self.all_clusters = await cache.get("all_clusters", [])
@@ -41,6 +41,7 @@ class OzonSupplier(ExcelOperations):
         self.draft_info = await cache.get("draft_info", {})
         self.draft_payload = await cache.get("draft_payload", {})
         self.orders = await cache.get("orders", [])
+        self.warehouse_title = await cache.get("warehouse_title", "")
 
     @property
     def cluster_map(self) -> dict:
@@ -79,13 +80,13 @@ class OzonSupplier(ExcelOperations):
                     merged_df = template_df.merge(products_df, left_on="артикул", right_on="Артикул", how="inner")
                     offers = merged_df.to_dict(orient="records")
                     city = f.parent.name.lower()
-                    logger.info(f"Обработка города {city}...")
+                    secho(f"Обработка города {city}...")
                     for cluster in self.all_clusters:
                         if cluster_id := cluster.get("macrolocal_cluster_id"):
                             cluster_data = cluster["data"]
                             cluster_name = cluster_data["macrolocal_cluster"]["name"]
                             if city in cluster_name.lower():
-                                logger.success(f"Кластер найден {cluster_name}: {cluster_id}")
+                                secho(f"Кластер найден {cluster_name}: {cluster_id}", color=True, fg="green")
                                 for offer in offers:
                                     clusters_info[cluster_id].append(
                                         {
@@ -97,9 +98,9 @@ class OzonSupplier(ExcelOperations):
                                     )
                                 break
                     else:
-                        logger.warning(f"Кластер для города {city} не найден!")
+                        secho(f"Кластер для города {city} не найден!", color=True, fg="yellow")
             except Exception as e:
-                logger.warning(e)
+                secho(e, color=True, fg="red")
 
         result["clusters_info"] = [
             {"macrolocal_cluster_id": cluster_id, "items": items} for cluster_id, items in clusters_info.items()
@@ -117,7 +118,7 @@ class OzonSupplier(ExcelOperations):
 
     async def rename_articles(self, update_offers: list[dict]) -> list[dict]:
         results = []
-        for offers in batched(update_offers, 25):
+        for offers in batched(update_offers, 25, strict=False):
             data = {"update_offer_id": offers}
             results.append(await self.ozon.rename_articles(data=data))
             await asyncio.sleep(1)
@@ -132,7 +133,7 @@ class OzonSupplier(ExcelOperations):
             if errors := draft_res.get("errors", []):
                 raise OzonSellerError(message=f"Ошибка при создании черновика: {errors}", code=draft_res.get("code"))
 
-            logger.info(f"draft_id={draft_res.get('draft_id')}")
+            secho(f"draft_id={draft_res.get('draft_id')}")
             self.draft_id = draft_res["draft_id"]
             return self.draft_id
         raise OzonSellerError(message="Не заполнены кластеры для черновика")
@@ -202,6 +203,7 @@ class OzonSupplier(ExcelOperations):
 
     def print_draft_info(self):
         if self.draft_info:
+            secho(f"Выбран склад: {self.warehouse_title}", color=True, fg="bright_cyan")
             secho(f"Информация о черновике {self.draft_id}:", bold=True)
             for cluster in self.draft_info["clusters"]:
                 state = cluster["warehouses"][0]["availability_status"]["state"]
@@ -223,7 +225,7 @@ class OzonSupplier(ExcelOperations):
         if errors := result.get("error_reasons"):
             raise OzonSellerError(message=f"Проблема при создании поставки {self.draft_id}, errors={errors}")
 
-        logger.success(f"Поставка из черновика {self.draft_id} создана")
+        secho(f"Поставка из черновика {self.draft_id} создана", fg="green", color=True)
 
     @cache(ttl="1d", condition=NOT_NONE, key="order_id")
     @retry(attempts=2, wait_initial=5, on=(OzonSellerError,))
@@ -239,7 +241,11 @@ class OzonSupplier(ExcelOperations):
 
         order_id = result["order_id"]
 
-        logger.success(f"Поставка {order_id} из черновика {self.draft_id} создана, status={result['status']}")
+        secho(
+            f"Поставка {order_id} из черновика {self.draft_id} создана, status={result['status']}",
+            color=True,
+            fg="green",
+        )
         self.order_id = order_id
         return order_id
 
@@ -282,12 +288,14 @@ class OzonSupplier(ExcelOperations):
 
         try:
             warehouse = IntPrompt.ask("Выберите склад", default=0)
-            secho(f"Выбран склад {self.warehouses[warehouse]['name']}", color=True, fg="green")
+            self.warehouse_title = f"{self.warehouses[warehouse]['name']} ({self.warehouses[warehouse]['address']})"
+            secho(f"Выбран склад: {self.warehouse_title}", color=True, fg="green")
+            await cache.set("warehouse_title", self.warehouse_title, expire="3d")
             return self.warehouses[warehouse]["warehouse_id"]
         except Exception as e:
             secho(f"Выбран склад по умолчанию, {e}", color=True, fg="yellow")
 
-    @cache(ttl="30m", condition=NOT_NONE, key="warehouse")
+    @cache(ttl="3d", condition=NOT_NONE, key="warehouse")
     async def populate_warehouse(self) -> int:
         search = Prompt.ask("Введите город для поиска склада", default="димитровград")
         self.warehouses = await self.get_warehouses(search=search)
