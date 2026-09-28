@@ -36,6 +36,7 @@ class ExcelOperations:
         return {
             "Артикул": "string",
             "SKU": "string",
+            "Название товара": "string",
             "Штрихкод (Серийный номер / EAN)": "string",
         }
 

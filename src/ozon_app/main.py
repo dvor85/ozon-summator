@@ -29,9 +29,9 @@ class TemplateGenerator(ExcelOperations):
         df = self.read_product_file()
         df["Артикул"] = df["Артикул"].str.replace("'", "")
         df["количество"] = 0
-        df = df.rename(columns={"Артикул": "артикул", "Название товара": "имя (необязательно)"}).astype(
-            self.template_columns
-        )
+        df = df.rename(columns={"Артикул": "артикул", "Название товара": "имя (необязательно)"})[
+            list(self.template_columns)
+        ].astype(self.template_columns)
         self.to_excel_with_format(df, self.path / self.template_fn, "Товарный состав", index=False)
 
 
